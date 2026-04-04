@@ -277,11 +277,11 @@ The Arduino SD library does not support SDXC cards. Use an **SDHC card (32GB or 
 
 *2. Incorrect voltage to the SD card module*
 
-Check the silkscreen or datasheet for your SD card breakout board:
-- If it has an onboard voltage regulator (e.g. AMS1117-3.3), it accepts **5V on VCC** and steps it down internally. If you are currently supplying 3.3V, try 5V.
-- If it has **no regulator**, it is a 3.3V-only module. Do not supply 5V — it will damage the module.
+⚠️ Please be very careful here. Do not supply 5v to your SD card breakout board unless you are sure it has an onboard regulator.
 
-Supplying the wrong voltage typically prevents the card from being detected at all rather than producing an `f_mount` error, so check the card type first.
+Check the silkscreen or datasheet for your SD card breakout board:
+- If it has an onboard voltage regulator (chip with three legs on one side), it accepts **5V on VCC** and steps it down internally. If you are currently supplying 3.3V, try 5V.
+- If it has **no regulator**, it is a 3.3V-only module. Do not supply 5V — it will damage the module.
 
 ---
 
