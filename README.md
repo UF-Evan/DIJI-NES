@@ -211,7 +211,7 @@ Download: <https://docs.espressif.com/projects/esp-test-tools/zh_CN/latest/esp32
 
 ### 🛠 常见问题排查 / Troubleshooting
 
-**PlatformIO 卡在 “Resolving dependencies…”**
+**PlatformIO 卡在 "Resolving dependencies…"**
 
 如果 PlatformIO 在配置项目或解析依赖时卡住，通常是由于 PlatformIO 本地环境损坏、缓存问题或权限异常导致的。
 可按下列步骤排查：
@@ -267,6 +267,22 @@ platformio upgrade
 
 If the issue persists, check the PlatformIO output/logs in VS Code for error details and consult the PlatformIO docs.
 
+**SD card error: `f_mount failed: (3) The physical drive cannot work`**
+
+This error has two common causes:
+
+*1. Wrong SD card type (most likely)*
+
+The Arduino SD library does not support SDXC cards. Use an **SDHC card (32GB or smaller)** formatted as FAT32. SDXC cards (typically 64GB+) use a different initialisation protocol and will produce this error even if correctly wired and powered.
+
+*2. Incorrect voltage to the SD card module*
+
+Check the silkscreen or datasheet for your SD card breakout board:
+- If it has an onboard voltage regulator (e.g. AMS1117-3.3), it accepts **5V on VCC** and steps it down internally. If you are currently supplying 3.3V, try 5V.
+- If it has **no regulator**, it is a 3.3V-only module. Do not supply 5V — it will damage the module.
+
+Supplying the wrong voltage typically prevents the card from being detected at all rather than producing an `f_mount` error, so check the card type first.
+
 ---
 
 ## 🎮 使用方法 / Usage
@@ -314,7 +330,7 @@ DiJi-NES/
 
 - [Anemoia-ESP32](https://github.com/Shim06/Anemoia-ESP32) - APU 时钟同步策略、帧级调度设计
 - [LovyanGFX](https://github.com/lovyan03/LovyanGFX) - 显示库
-- [NESdev Wiki](https://www.nesdev.org/wiki/) - NES 硬件文档
+- [NESdev Wiki](https://www.nesdev.org/) - NES 硬件文档
 
 特别感谢 Anemoia-ESP32 项目，本项目的 帧级调度设计 和 APU 独立核心运行 + I2S 阻塞同步的设计思路来源于此。
 
@@ -338,5 +354,3 @@ DiJi-NES/
 <p align="center">
   <b>Happy Gaming! 🎮</b>
 </p>
-
-
