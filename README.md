@@ -211,7 +211,7 @@ Download: <https://docs.espressif.com/projects/esp-test-tools/zh_CN/latest/esp32
 
 ### 🛠 常见问题排查 / Troubleshooting
 
-**PlatformIO 卡在 "Resolving dependencies…"**
+**PlatformIO 卡在 “Resolving dependencies…”**
 
 如果 PlatformIO 在配置项目或解析依赖时卡住，通常是由于 PlatformIO 本地环境损坏、缓存问题或权限异常导致的。
 可按下列步骤排查：
@@ -330,7 +330,7 @@ DiJi-NES/
 
 - [Anemoia-ESP32](https://github.com/Shim06/Anemoia-ESP32) - APU 时钟同步策略、帧级调度设计
 - [LovyanGFX](https://github.com/lovyan03/LovyanGFX) - 显示库
-- [NESdev Wiki](https://www.nesdev.org/) - NES 硬件文档
+- [NESdev Wiki](https://www.nesdev.org/wiki/) - NES 硬件文档
 
 特别感谢 Anemoia-ESP32 项目，本项目的 帧级调度设计 和 APU 独立核心运行 + I2S 阻塞同步的设计思路来源于此。
 
@@ -354,3 +354,4 @@ DiJi-NES/
 <p align="center">
   <b>Happy Gaming! 🎮</b>
 </p>
+
