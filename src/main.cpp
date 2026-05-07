@@ -3,6 +3,7 @@
 #include <SPI.h>
 #include <vector>
 #include <algorithm>
+#include <cstring>
 #include <String.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -42,6 +43,10 @@ static int selectedIndex = 0;             // 当前选中的游戏索引
 static int scrollOffset = 0;              // 滚动偏移
 static const int ITEMS_PER_PAGE = 8;      // 每页显示的游戏数量
 static int pauseMenuIndex = 0;            // 暂停菜单选项索引
+
+// ROM 文件名可能包含 UTF-8 中文；默认 Font0 不含中文字形。
+static const lgfx::IFont* MENU_ROM_FONT = &fonts::efontCN_16;
+static const int MENU_ROM_NAME_MAX_WIDTH = 238;
 
 // 按键防抖
 static unsigned long lastButtonTime = 0;
@@ -420,6 +425,68 @@ void scanROMFiles() {
     std::sort(romList.begin(), romList.end());
 }
 
+static int nextUtf8CharIndex(const String& text, int index) {
+    const int length = text.length();
+    if (index >= length) return length;
+
+    uint8_t lead = (uint8_t)text[index];
+    int charBytes = 1;
+    if ((lead & 0xE0) == 0xC0) {
+        charBytes = 2;
+    } else if ((lead & 0xF0) == 0xE0) {
+        charBytes = 3;
+    } else if ((lead & 0xF8) == 0xF0) {
+        charBytes = 4;
+    }
+
+    if (index + charBytes > length) return length;
+    for (int i = 1; i < charBytes; i++) {
+        if (((uint8_t)text[index + i] & 0xC0) != 0x80) return index + 1;
+    }
+    return index + charBytes;
+}
+
+static String trimTextToPixelWidth(const String& text, int maxWidth, const lgfx::IFont* font) {
+    if (tft.textWidth(text, font) <= maxWidth) return text;
+
+    const String ellipsis = "...";
+    int ellipsisWidth = tft.textWidth(ellipsis, font);
+    if (ellipsisWidth >= maxWidth) return "";
+
+    String result;
+    for (int i = 0; i < text.length();) {
+        int next = nextUtf8CharIndex(text, i);
+        String candidate = result + text.substring(i, next) + ellipsis;
+        if (tft.textWidth(candidate, font) > maxWidth) break;
+
+        result += text.substring(i, next);
+        i = next;
+    }
+
+    return result + ellipsis;
+}
+
+static String getROMDisplayName(const String& romPath) {
+    String displayName = romPath;
+    int lastSlash = displayName.lastIndexOf('/');
+    if (lastSlash >= 0) {
+        displayName = displayName.substring(lastSlash + 1);
+    }
+
+    int dotPos = displayName.lastIndexOf('.');
+    if (dotPos > 0) {
+        displayName = displayName.substring(0, dotPos);
+    }
+
+    return trimTextToPixelWidth(displayName, MENU_ROM_NAME_MAX_WIDTH, MENU_ROM_FONT);
+}
+
+static void drawROMDisplayName(const String& romPath, int x, int y, uint16_t color) {
+    tft.setTextSize(1);
+    tft.setTextColor(color);
+    tft.drawString(getROMDisplayName(romPath), x, y, MENU_ROM_FONT);
+}
+
 // ================ 主菜单绘制 ================
 void drawMainMenu() {
     tft.fillScreen(MENU_BG_COLOR);
@@ -498,24 +565,8 @@ void drawMainMenu() {
                 tft.setTextColor(MENU_TEXT_COLOR);
             }
             
-            // 游戏名称（去掉路径和扩展名）
-            String displayName = romList[romIndex];
-            // 去掉开头的 /
-            if (displayName.startsWith("/")) {
-                displayName = displayName.substring(1);
-            }
-            // 去掉扩展名
-            int dotPos = displayName.lastIndexOf('.');
-            if (dotPos > 0) {
-                displayName = displayName.substring(0, dotPos);
-            }
-            // 限制显示长度
-            if (displayName.length() > 30) {
-                displayName = displayName.substring(0, 27) + "...";
-            }
-            
-            tft.setCursor(listX + 18, itemY + 6);
-            tft.print(displayName);
+            drawROMDisplayName(romList[romIndex], listX + 18, itemY + 2,
+                               romIndex == selectedIndex ? MENU_TITLE_COLOR : MENU_TEXT_COLOR);
         }
         
         // 分页信息
@@ -694,21 +745,8 @@ void drawMenuList() {
             tft.setTextColor(MENU_TEXT_COLOR);
         }
         
-        // 游戏名称（去掉路径和扩展名）
-        String displayName = romList[romIndex];
-        if (displayName.startsWith("/")) {
-            displayName = displayName.substring(1);
-        }
-        int dotPos = displayName.lastIndexOf('.');
-        if (dotPos > 0) {
-            displayName = displayName.substring(0, dotPos);
-        }
-        if (displayName.length() > 30) {
-            displayName = displayName.substring(0, 27) + "...";
-        }
-        
-        tft.setCursor(listX + 18, itemY + 6);
-        tft.print(displayName);
+        drawROMDisplayName(romList[romIndex], listX + 18, itemY + 2,
+                           romIndex == selectedIndex ? MENU_TITLE_COLOR : MENU_TEXT_COLOR);
     }
     
     // 更新分页信息
