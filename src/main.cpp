@@ -18,16 +18,27 @@
 #define ENABLE_DEBUG_SERIAL false
 #endif
 
-// ================ 菜单颜色配置 (高级灰色调) ================
-#define MENU_BG_COLOR       0x2104  // 深灰背景 (RGB: 32, 32, 32)
-#define MENU_HEADER_COLOR   0x4A69  // 中灰标题背景 (RGB: 72, 77, 72)
-#define MENU_TEXT_COLOR     0xC618  // 浅灰文字 (RGB: 192, 192, 192)
-#define MENU_HIGHLIGHT_BG   0xFDE0  // 选中项背景 (RGB: 255, 255, 0)
-#define MENU_ARROW_COLOR    0xAD75  // 箭头颜色 (RGB: 168, 174, 168)
-#define MENU_HINT_COLOR     0x7BCF  // 提示文字颜色 (RGB: 120, 120, 120)
-#define MENU_TITLE_COLOR    0xE71C  // 标题文字 (RGB: 224, 224, 224)
-#define MENU_BORDER_COLOR   0x52AA  // 边框颜色 (RGB: 80, 85, 80)
-#define PAUSE_OVERLAY_COLOR 0x18C3  // 暂停遮罩 (深色半透明效果)
+// ================ 菜单颜色配置 (dark gaming skin) ================
+#define MENU_BG_COLOR         0x0000  // 纯黑背景
+#define MENU_BG_COLOR_2       0x1082  // 炭黑渐变终点
+#define MENU_HEADER_COLOR     0x1803  // 深红黑头部起点
+#define MENU_HEADER_COLOR_2   0x2805  // 深红黑头部终点
+#define MENU_TEXT_COLOR       0xCE59  // 常规文字
+#define MENU_TEXT_ACTIVE      0xFFFF  // 选中项文字
+#define MENU_HIGHLIGHT_BG     0xB904  // 暗红高亮
+#define MENU_ARROW_COLOR      0xFBE0  // 琥珀箭头
+#define MENU_HINT_COLOR       0x8C71  // 次级灰文字
+#define MENU_TITLE_COLOR      0xF79E  // 标题亮色
+#define MENU_BORDER_COLOR     0x4A49  // 枪灰边框
+#define MENU_SURFACE_COLOR    0x0841  // 面板底色
+#define MENU_SURFACE_COLOR_2  0x1062  // 面板渐变终点
+#define MENU_SCROLL_TRACK     0x18C3  // 滚动条轨道
+#define MENU_SCROLL_THUMB     0xC9A6  // 滚动条滑块
+#define EMU_FRAME_BG_TOP      0x0000  // 模拟器背景渐变起点
+#define EMU_FRAME_BG_BOTTOM   0x0841  // 模拟器背景渐变终点
+#define EMU_FRAME_BORDER_OUT  0x4208  // 模拟器外边框
+#define EMU_FRAME_BORDER_IN   0xA145  // 模拟器内边框
+#define PAUSE_OVERLAY_COLOR   0x18C3  // 暂停遮罩 (深色半透明效果)
 
 // ================ 菜单状态 ================
 enum AppState {
@@ -40,12 +51,19 @@ static AppState currentState = STATE_MENU;
 static std::vector<String> romList;       // ROM 文件列表
 static int selectedIndex = 0;             // 当前选中的游戏索引
 static int scrollOffset = 0;              // 滚动偏移
-static const int ITEMS_PER_PAGE = 8;      // 每页显示的游戏数量
 static int pauseMenuIndex = 0;            // 暂停菜单选项索引
+static int marqueeOffsetChars = 0;        // 长标题跑马灯偏移（字符）
+static int marqueeSelectionIndex = -1;    // 跑马灯绑定选中项
+static unsigned long marqueeStartMs = 0;  // 当前选中项跑马灯起始时间
+static unsigned long marqueeLastStepMs = 0;
 
 // 按键防抖
 static unsigned long lastButtonTime = 0;
 static const unsigned long BUTTON_DEBOUNCE = 200;  // 200ms防抖
+static const int MENU_CHAR_WIDTH = 6;              // 默认字体宽度(6x8)
+static const unsigned long MENU_MARQUEE_START_DELAY_MS = 700;
+static const unsigned long MENU_MARQUEE_STEP_MS = 130;
+static const int MENU_MARQUEE_GAP_CHARS = 5;
 
 #if ENABLE_DEBUG_SERIAL
 #define FPS_PRINT(...) Serial.printf(__VA_ARGS__)
@@ -62,7 +80,7 @@ static const unsigned long BUTTON_DEBOUNCE = 200;  // 200ms防抖
 #define SD_FREQ       10000000  // 10 MHz
 
 // 游戏控制器按键
-#define A_BUTTON      48
+#define A_BUTTON      45
 #define B_BUTTON      47
 #define LEFT_BUTTON   8
 #define RIGHT_BUTTON  18
@@ -87,9 +105,10 @@ LGFX tft;
 // 屏幕参数
 constexpr int SCREEN_WIDTH  = 256;
 constexpr int SCREEN_HEIGHT = 240;
-constexpr int TFT_OFFSET_X  = (320 - SCREEN_WIDTH) / 2; // 横向居中
 constexpr int OVERSCAN_CROP_X = 4;  // 隐藏 LCD 上可见的横向卷轴边缘接缝
 constexpr int DISPLAY_WIDTH = SCREEN_WIDTH - OVERSCAN_CROP_X * 2;
+static int TFT_OFFSET_X = 0;  // 游戏区域横向居中偏移
+static int TFT_OFFSET_Y = 0;  // 游戏区域纵向居中偏移
 // 每个块的行数（用 DMA 一次推多行以减少 setAddrWindow/wait 开销）
 // 8 行 = 30 次 DMA/帧，60 行 = 4 次 DMA/帧，120 行 = 2 次 DMA/帧
 constexpr int BLOCK_LINES = 60;  // 增大到 60 行，240/60=4 次 DMA 每帧
@@ -115,6 +134,21 @@ static volatile uint8_t render_buf_idx = 0;
 static volatile uint8_t last_displayed_idx = 0;
 
 static QueueHandle_t frame_queue = nullptr;
+
+static uint16_t* allocFrameBuffer(size_t bytes) {
+    uint16_t* p = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (!p) p = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL);
+    if (!p) p = (uint16_t*)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+    if (!p) p = (uint16_t*)ps_malloc(bytes);
+    if (!p) p = (uint16_t*)malloc(bytes);
+    return p;
+}
+
+static int firstValidFrameBufferIndex() {
+    if (frame_buf[0]) return 0;
+    if (frame_buf[1]) return 1;
+    return -1;
+}
 
 static void initializeAudio();
 static void apu_task(void* arg);
@@ -162,6 +196,40 @@ void returnToMainMenu();
 void clearScreenForGame();
 bool tryInitSD();  // 尝试初始化 SD 卡
 
+struct MenuLayout {
+    int panelWidth;
+    int panelHeight;
+    int headerHeight;
+    int footerHeight;
+    int hintY;
+    int listX;
+    int listY;
+    int listWidth;
+    int listHeight;
+    int itemHeight;
+    int itemsPerPage;
+    int textX;
+    int textWidth;
+    int scrollbarX;
+    int scrollbarY;
+    int scrollbarWidth;
+    int scrollbarHeight;
+};
+
+static MenuLayout getMenuLayout();
+static void resetMenuMarquee();
+static void normalizeMenuSelection(const MenuLayout& layout);
+static void drawVerticalGradient(int x, int y, int w, int h, uint16_t topColor, uint16_t bottomColor);
+static String getRomDisplayName(int romIndex);
+static String ellipsizeText(const String& text, int maxChars);
+static String buildMarqueeWindow(const String& text, int visibleChars, int offsetChars);
+static String getMenuItemText(int romIndex, bool selected, int maxChars, unsigned long now);
+static void drawMenuScrollbar(const MenuLayout& layout);
+static void drawMenuStaticChrome(const MenuLayout& layout);
+static bool tickMenuMarquee(const MenuLayout& layout, unsigned long now);
+static void moveSelectionByPage(int direction, const MenuLayout& layout);
+static void drawCenteredText(const char* text, int y);
+
 static void resetFrameScheduler(uint8_t forceRenderFrames = 2) {
     next_frame_us = 0;
     force_render_frames = forceRenderFrames;
@@ -186,6 +254,34 @@ static void getSaveStatePath(char* savePath, size_t maxLen) {
     }
 }
 
+static MenuLayout getMenuLayout() {
+    MenuLayout layout{};
+    layout.panelWidth = tft.width();
+    layout.panelHeight = tft.height();
+    layout.headerHeight = 52;
+    layout.footerHeight = 34;
+    layout.hintY = layout.panelHeight - layout.footerHeight;
+    layout.listX = 14;
+    layout.listY = layout.headerHeight + 10;
+    layout.listWidth = layout.panelWidth - (layout.listX * 2);
+    layout.itemHeight = 24;
+
+    int listBottom = layout.hintY - 10;
+    int rawListHeight = listBottom - layout.listY;
+    layout.itemsPerPage = rawListHeight / layout.itemHeight;
+    if (layout.itemsPerPage < 1) layout.itemsPerPage = 1;
+    layout.listHeight = layout.itemsPerPage * layout.itemHeight;
+    layout.scrollbarWidth = 8;
+    layout.scrollbarX = layout.listX + layout.listWidth - 12;
+    layout.scrollbarY = layout.listY + 4;
+    layout.scrollbarHeight = layout.listHeight - 8;
+    if (layout.scrollbarHeight < 8) layout.scrollbarHeight = 8;
+    layout.textX = layout.listX + 16;
+    layout.textWidth = (layout.scrollbarX - 8) - layout.textX;
+    if (layout.textWidth < 36) layout.textWidth = 36;
+    return layout;
+}
+
 // ================ 初始化函数 ================
 void initializeSerial() {
 #if ENABLE_DEBUG_SERIAL
@@ -199,20 +295,20 @@ void initializeSerial() {
 
 void initializeScreen() {
     tft.init();
-    tft.setRotation(3);  // 横屏模式
+    tft.setRotation(3);  // 480x320 横屏
+    TFT_OFFSET_X = (tft.width() - SCREEN_WIDTH) / 2;
+    TFT_OFFSET_Y = (tft.height() - SCREEN_HEIGHT) / 2;
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.setTextSize(1);
     tft.setCursor(0, 0);
     
     // 分配双缓冲（用于无撕裂推屏）
+    const size_t frameBytes = SCREEN_WIDTH * SCREEN_HEIGHT * sizeof(uint16_t);
     for (int i = 0; i < 2; i++) {
-        frame_buf[i] = (uint16_t*)heap_caps_malloc(
-            SCREEN_WIDTH * SCREEN_HEIGHT * sizeof(uint16_t),
-            MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL
-        );
+        frame_buf[i] = allocFrameBuffer(frameBytes);
         if (frame_buf[i]) {
-            memset(frame_buf[i], 0, SCREEN_WIDTH * SCREEN_HEIGHT * sizeof(uint16_t));
+            memset(frame_buf[i], 0, frameBytes);
         }
     }
 
@@ -220,6 +316,8 @@ void initializeScreen() {
         DISPLAY_WIDTH * DISPLAY_BLOCK_LINES * sizeof(uint16_t),
         MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL
     );
+
+    Serial.printf("Frame buffers: buf0=%p buf1=%p crop=%p\n", frame_buf[0], frame_buf[1], display_crop_buf);
 }
 
 // 在 loop() 中调用：检查帧完成并入队
@@ -236,8 +334,11 @@ static bool tryEnqueueFrame() {
     uint8_t send_idx = render_buf_idx;
     // 如果本帧有实际渲染，发送当前渲染缓冲并切换到另一个用于下一帧渲染
     if (xQueueSend(frame_queue, &send_idx, 0) == pdTRUE) {
-        // 切换到另一缓冲用于下一帧渲染
-        render_buf_idx = 1 - render_buf_idx;
+        // 切换到另一缓冲用于下一帧渲染（若另一缓冲不可用则保持单缓冲）
+        uint8_t next_idx = (uint8_t)(1 - render_buf_idx);
+        if (frame_buf[next_idx]) {
+            render_buf_idx = next_idx;
+        }
         ppu.frameBuffer = frame_buf[render_buf_idx];
         ppu.frameReady = false;
         last_rendered_ms = millis();
@@ -256,6 +357,9 @@ static void display_task(void* arg) {
         
         uint32_t t0 = micros();
         uint16_t* buf = frame_buf[buf_idx];
+        if (!buf) {
+            continue;
+        }
         
         tft.startWrite();
         // 分块 DMA 推送（不渲染，直接推送已渲染的缓冲）
@@ -268,13 +372,13 @@ static void display_task(void* arg) {
                            buf + (baseY + row) * SCREEN_WIDTH + OVERSCAN_CROP_X,
                            DISPLAY_WIDTH * sizeof(uint16_t));
                 }
-                tft.setAddrWindow(TFT_OFFSET_X + OVERSCAN_CROP_X, baseY, DISPLAY_WIDTH, h);
-                tft.pushPixelsDMA(display_crop_buf, DISPLAY_WIDTH * h);
+                tft.setAddrWindow(TFT_OFFSET_X + OVERSCAN_CROP_X, TFT_OFFSET_Y + baseY, DISPLAY_WIDTH, h);
+                tft.pushPixelsDMA(display_crop_buf, DISPLAY_WIDTH * h, true);
                 tft.waitDMA();
             } else {
                 for (int row = 0; row < h; row++) {
-                    tft.setAddrWindow(TFT_OFFSET_X + OVERSCAN_CROP_X, baseY + row, DISPLAY_WIDTH, 1);
-                    tft.pushPixelsDMA(buf + (baseY + row) * SCREEN_WIDTH + OVERSCAN_CROP_X, DISPLAY_WIDTH);
+                    tft.setAddrWindow(TFT_OFFSET_X + OVERSCAN_CROP_X, TFT_OFFSET_Y + baseY + row, DISPLAY_WIDTH, 1);
+                    tft.pushPixelsDMA(buf + (baseY + row) * SCREEN_WIDTH + OVERSCAN_CROP_X, DISPLAY_WIDTH, true);
                     tft.waitDMA();
                 }
             }
@@ -322,20 +426,29 @@ void updateButtons() {
     buttons.SELECT = !digitalRead(SELECT_BUTTON);
 }
 
+static void drawEmulatorFrameChrome() {
+    drawVerticalGradient(0, 0, tft.width(), tft.height(), EMU_FRAME_BG_TOP, EMU_FRAME_BG_BOTTOM);
+
+    // Decorate only around the gameplay viewport, without touching the active frame area.
+    int gameX = TFT_OFFSET_X + OVERSCAN_CROP_X;
+    int gameY = TFT_OFFSET_Y;
+    int gameW = DISPLAY_WIDTH;
+    int gameH = SCREEN_HEIGHT;
+
+    tft.drawRect(gameX - 3, gameY - 3, gameW + 6, gameH + 6, EMU_FRAME_BORDER_OUT);
+    tft.drawRect(gameX - 2, gameY - 2, gameW + 4, gameH + 4, EMU_FRAME_BORDER_IN);
+
+    tft.setTextColor(MENU_HINT_COLOR);
+    tft.setTextSize(1);
+    tft.setCursor(10, tft.height() - 14);
+    tft.print("Nintendo Entertainment System v1.1");
+}
+
 // ================ 清除屏幕边缘，进入游戏前调用 ================
 void clearScreenForGame() {
-    // 屏幕 320x240, 游戏区域居中显示，左右 overscan 裁边保持黑色
-    
     // 先停止 DMA，确保不会覆盖我们的清屏操作
     tft.waitDMA();
-    
-    // 直接清除左右边缘区域（这些区域 DMA 不会触碰）
-    tft.startWrite();
-    tft.fillRect(0, 0, TFT_OFFSET_X + OVERSCAN_CROP_X, 240, TFT_BLACK);
-    tft.fillRect(TFT_OFFSET_X + OVERSCAN_CROP_X, 0, DISPLAY_WIDTH, 240, TFT_BLACK);
-    tft.fillRect(TFT_OFFSET_X + SCREEN_WIDTH - OVERSCAN_CROP_X, 0,
-                 TFT_OFFSET_X + OVERSCAN_CROP_X, 240, TFT_BLACK);
-    tft.endWrite();
+    drawEmulatorFrameChrome();
     
     // 同时清空帧缓冲区，防止 DMA 任务推送旧数据
     if (frame_buf[0]) {
@@ -420,136 +533,254 @@ void scanROMFiles() {
     std::sort(romList.begin(), romList.end());
 }
 
-// ================ 主菜单绘制 ================
-void drawMainMenu() {
-    tft.fillScreen(MENU_BG_COLOR);
-    
-    // ===== 头部标题 =====
-    tft.fillRect(0, 0, 320, 36, MENU_HEADER_COLOR);
-    tft.drawRect(0, 0, 320, 36, MENU_BORDER_COLOR);
-    
-    // 绘制 DiJi-NES 标题
+static void resetMenuMarquee() {
+    marqueeOffsetChars = 0;
+    marqueeSelectionIndex = selectedIndex;
+    marqueeStartMs = millis();
+    marqueeLastStepMs = marqueeStartMs;
+}
+
+static void normalizeMenuSelection(const MenuLayout& layout) {
+    if (romList.empty()) {
+        selectedIndex = 0;
+        scrollOffset = 0;
+        resetMenuMarquee();
+        return;
+    }
+
+    int oldSelected = selectedIndex;
+    int romCount = (int)romList.size();
+    if (selectedIndex < 0) selectedIndex = 0;
+    if (selectedIndex >= romCount) selectedIndex = romCount - 1;
+
+    int maxScrollOffset = romCount - 1;
+    if (maxScrollOffset < 0) maxScrollOffset = 0;
+    if (scrollOffset < 0) scrollOffset = 0;
+    if (scrollOffset > maxScrollOffset) scrollOffset = maxScrollOffset;
+
+    if (selectedIndex < scrollOffset) {
+        scrollOffset = selectedIndex;
+    } else if (selectedIndex >= scrollOffset + layout.itemsPerPage) {
+        scrollOffset = selectedIndex - layout.itemsPerPage + 1;
+    }
+
+    if (selectedIndex != oldSelected || marqueeSelectionIndex != selectedIndex) {
+        resetMenuMarquee();
+    }
+}
+
+static void drawVerticalGradient(int x, int y, int w, int h, uint16_t topColor, uint16_t bottomColor) {
+    if (w <= 0 || h <= 0) return;
+
+    int r1 = (topColor >> 11) & 0x1F;
+    int g1 = (topColor >> 5) & 0x3F;
+    int b1 = topColor & 0x1F;
+    int r2 = (bottomColor >> 11) & 0x1F;
+    int g2 = (bottomColor >> 5) & 0x3F;
+    int b2 = bottomColor & 0x1F;
+
+    if (h == 1) {
+        tft.drawFastHLine(x, y, w, topColor);
+        return;
+    }
+
+    for (int i = 0; i < h; i++) {
+        int r = r1 + ((r2 - r1) * i) / (h - 1);
+        int g = g1 + ((g2 - g1) * i) / (h - 1);
+        int b = b1 + ((b2 - b1) * i) / (h - 1);
+        uint16_t color = (uint16_t)((r << 11) | (g << 5) | b);
+        tft.drawFastHLine(x, y + i, w, color);
+    }
+}
+
+static void drawCenteredText(const char* text, int y) {
+    int textWidth = tft.textWidth(text);
+    int x = (tft.width() - textWidth) / 2;
+    if (x < 0) x = 0;
+    tft.setCursor(x, y);
+    tft.print(text);
+}
+
+static String getRomDisplayName(int romIndex) {
+    if (romIndex < 0 || romIndex >= (int)romList.size()) return "";
+
+    String displayName = romList[romIndex];
+    if (displayName.startsWith("/")) {
+        displayName = displayName.substring(1);
+    }
+    int dotPos = displayName.lastIndexOf('.');
+    if (dotPos > 0) {
+        displayName = displayName.substring(0, dotPos);
+    }
+    return displayName;
+}
+
+static String ellipsizeText(const String& text, int maxChars) {
+    if (maxChars <= 0) return "";
+    if ((int)text.length() <= maxChars) return text;
+    if (maxChars <= 3) return text.substring(0, maxChars);
+    return text.substring(0, maxChars - 3) + "...";
+}
+
+static String buildMarqueeWindow(const String& text, int visibleChars, int offsetChars) {
+    if (visibleChars <= 0) return "";
+    if ((int)text.length() <= visibleChars) return text;
+
+    String source = text;
+    source.reserve(text.length() + MENU_MARQUEE_GAP_CHARS + 1);
+    for (int i = 0; i < MENU_MARQUEE_GAP_CHARS; i++) source += ' ';
+
+    int sourceLen = source.length();
+    if (sourceLen == 0) return "";
+
+    String out;
+    out.reserve(visibleChars + 1);
+    for (int i = 0; i < visibleChars; i++) {
+        int idx = (offsetChars + i) % sourceLen;
+        out += source.charAt(idx);
+    }
+    return out;
+}
+
+static String getMenuItemText(int romIndex, bool selected, int maxChars, unsigned long now) {
+    String name = getRomDisplayName(romIndex);
+    if ((int)name.length() <= maxChars) return name;
+
+    if (!selected) return ellipsizeText(name, maxChars);
+
+    if ((now - marqueeStartMs) < MENU_MARQUEE_START_DELAY_MS && marqueeOffsetChars == 0) {
+        return ellipsizeText(name, maxChars);
+    }
+
+    return buildMarqueeWindow(name, maxChars, marqueeOffsetChars);
+}
+
+static void drawMenuScrollbar(const MenuLayout& layout) {
+    tft.fillRect(layout.scrollbarX, layout.scrollbarY, layout.scrollbarWidth, layout.scrollbarHeight, MENU_SCROLL_TRACK);
+    tft.drawRect(layout.scrollbarX - 1, layout.scrollbarY - 1, layout.scrollbarWidth + 2, layout.scrollbarHeight + 2, MENU_BORDER_COLOR);
+
+    if (romList.empty()) return;
+    int totalItems = (int)romList.size();
+    if (totalItems <= 0) return;
+
+    int trackHeight = layout.scrollbarHeight;
+    int thumbHeight = trackHeight;
+    int thumbY = layout.scrollbarY;
+
+    if (totalItems > layout.itemsPerPage) {
+        thumbHeight = (trackHeight * layout.itemsPerPage) / totalItems;
+        if (thumbHeight < 12) thumbHeight = 12;
+        if (thumbHeight > trackHeight) thumbHeight = trackHeight;
+        int maxScrollOffset = totalItems - 1;
+        int travel = trackHeight - thumbHeight;
+        thumbY = layout.scrollbarY + ((travel * scrollOffset) / maxScrollOffset);
+    }
+
+    tft.fillRect(layout.scrollbarX + 1, thumbY + 1, layout.scrollbarWidth - 2, thumbHeight - 2, MENU_SCROLL_THUMB);
+}
+
+static void drawMenuStaticChrome(const MenuLayout& layout) {
+    drawVerticalGradient(0, 0, layout.panelWidth, layout.panelHeight, MENU_BG_COLOR, MENU_BG_COLOR_2);
+    drawVerticalGradient(0, 0, layout.panelWidth, layout.headerHeight, MENU_HEADER_COLOR, MENU_HEADER_COLOR_2);
+    tft.drawFastHLine(0, layout.headerHeight - 1, layout.panelWidth, MENU_BORDER_COLOR);
+
+    drawVerticalGradient(layout.listX, layout.listY, layout.listWidth, layout.listHeight, MENU_SURFACE_COLOR, MENU_SURFACE_COLOR_2);
+    tft.drawRect(layout.listX - 2, layout.listY - 2, layout.listWidth + 4, layout.listHeight + 4, MENU_BORDER_COLOR);
+
+    tft.fillRect(0, layout.hintY, layout.panelWidth, layout.footerHeight, MENU_HEADER_COLOR_2);
+    tft.drawFastHLine(0, layout.hintY, layout.panelWidth, MENU_BORDER_COLOR);
+
     tft.setTextColor(MENU_TITLE_COLOR);
     tft.setTextSize(2);
-    tft.setCursor(105, 10);
-    tft.print("DIJI-NES");
-    
-    // 装饰线
-    tft.drawFastHLine(20, 34, 280, MENU_BORDER_COLOR);
-    
-    // ===== 游戏列表区域 =====
-    int listStartY = 44;
-    int itemHeight = 20;
-    int listWidth = 280;
-    int listX = 20;
-    
-    // 绘制列表边框
-    tft.drawRect(listX - 2, listStartY - 2, listWidth + 4, ITEMS_PER_PAGE * itemHeight + 4, MENU_BORDER_COLOR);
-    
-    if (romList.empty()) {
-        tft.setTextColor(MENU_HINT_COLOR);
-        tft.setTextSize(1);
-        if (!sdCardAvailable) {
-            // SD 卡未插入
-            tft.setCursor(60, listStartY + 40);
-            tft.print("No SD card detected");
-            tft.setCursor(40, listStartY + 60);
-            tft.print("Please insert SD card with");
-            tft.setCursor(40, listStartY + 75);
-            tft.print(".nes ROM files");
-            tft.setCursor(50, listStartY + 100);
-            tft.setTextColor(MENU_ARROW_COLOR);
-            tft.print("Press A to retry");
-        } else {
-            // SD 卡已插入但没有 ROM
-            tft.setCursor(80, listStartY + 60);
-            tft.print("No ROM files found on SD card");
-            tft.setCursor(90, listStartY + 80);
-            tft.print("Please add .nes files");
-        }
-    } else {
-        // 计算分页信息
-        int totalPages = (romList.size() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
-        int currentPage = scrollOffset / ITEMS_PER_PAGE + 1;
-        
-        tft.setTextSize(1);
-        
-        for (int i = 0; i < ITEMS_PER_PAGE; i++) {
-            int romIndex = scrollOffset + i;
-            if (romIndex >= (int)romList.size()) break;
-            
-            int itemY = listStartY + i * itemHeight;
-            
-            // 高亮选中项
-            if (romIndex == selectedIndex) {
-                tft.fillRect(listX, itemY, listWidth, itemHeight - 1, MENU_HIGHLIGHT_BG);
-                
-                // 右侧箭头指示器
-                tft.setTextColor(MENU_ARROW_COLOR);
-                tft.setCursor(listX + listWidth - 20, itemY + 6);
-                tft.print("<");
-                
-                // 左侧也加箭头
-                tft.setCursor(listX + 4, itemY + 6);
-                tft.print(">");
-                
-                tft.setTextColor(MENU_TITLE_COLOR);
-            } else {
-                tft.setTextColor(MENU_TEXT_COLOR);
-            }
-            
-            // 游戏名称（去掉路径和扩展名）
-            String displayName = romList[romIndex];
-            // 去掉开头的 /
-            if (displayName.startsWith("/")) {
-                displayName = displayName.substring(1);
-            }
-            // 去掉扩展名
-            int dotPos = displayName.lastIndexOf('.');
-            if (dotPos > 0) {
-                displayName = displayName.substring(0, dotPos);
-            }
-            // 限制显示长度
-            if (displayName.length() > 30) {
-                displayName = displayName.substring(0, 27) + "...";
-            }
-            
-            tft.setCursor(listX + 18, itemY + 6);
-            tft.print(displayName);
-        }
-        
-        // 分页信息
-        tft.setTextColor(MENU_HINT_COLOR);
-        tft.setCursor(270, listStartY + ITEMS_PER_PAGE * itemHeight + 6);
-        char pageInfo[16];
-        snprintf(pageInfo, sizeof(pageInfo), "%d/%d", currentPage, totalPages);
-        tft.print(pageInfo);
-    }
-    
-    // ===== 底部操作提示 =====
-    int hintY = 210;
-    tft.fillRect(0, hintY, 320, 30, MENU_HEADER_COLOR);
-    tft.drawFastHLine(0, hintY, 320, MENU_BORDER_COLOR);
-    
+    tft.setCursor((layout.panelWidth / 2) - 170, 8);
+    tft.print("Nintendo Entertainment System");
+
     tft.setTextColor(MENU_HINT_COLOR);
     tft.setTextSize(1);
-    tft.setCursor(60, hintY + 10);
-    tft.print("UP/DOWN: Select    START: Play Game");
+    tft.setCursor((layout.panelWidth / 2) - 146, layout.hintY + 11);
+    tft.print("UP/DOWN: Move   LEFT/RIGHT: Page   A/START: Play");
+}
+
+static bool tickMenuMarquee(const MenuLayout& layout, unsigned long now) {
+    if (romList.empty()) return false;
+
+    int maxChars = layout.textWidth / MENU_CHAR_WIDTH;
+    if (maxChars < 1) maxChars = 1;
+
+    String selectedName = getRomDisplayName(selectedIndex);
+    if ((int)selectedName.length() <= maxChars) {
+        if (marqueeOffsetChars != 0 || marqueeSelectionIndex != selectedIndex) {
+            resetMenuMarquee();
+            return true;
+        }
+        return false;
+    }
+
+    if (marqueeSelectionIndex != selectedIndex) {
+        resetMenuMarquee();
+        return true;
+    }
+
+    if ((now - marqueeStartMs) < MENU_MARQUEE_START_DELAY_MS) {
+        return false;
+    }
+
+    if ((now - marqueeLastStepMs) < MENU_MARQUEE_STEP_MS) {
+        return false;
+    }
+
+    int cycleLen = selectedName.length() + MENU_MARQUEE_GAP_CHARS;
+    if (cycleLen <= 0) return false;
+    marqueeOffsetChars = (marqueeOffsetChars + 1) % cycleLen;
+    marqueeLastStepMs = now;
+    return true;
+}
+
+static void moveSelectionByPage(int direction, const MenuLayout& layout) {
+    if (romList.empty()) return;
+    int romCount = (int)romList.size();
+    int pageSize = layout.itemsPerPage;
+    if (pageSize <= 0) pageSize = 1;
+
+    int totalPages = (romCount + pageSize - 1) / pageSize;
+    if (totalPages <= 1) return;
+
+    int currentPage = selectedIndex / pageSize;
+    int rowInPage = selectedIndex % pageSize;
+    int nextPage = (currentPage + direction + totalPages) % totalPages;
+
+    int nextIndex = nextPage * pageSize + rowInPage;
+    int pageLastIndex = ((nextPage + 1) * pageSize) - 1;
+    if (pageLastIndex >= romCount) pageLastIndex = romCount - 1;
+    if (nextIndex > pageLastIndex) nextIndex = pageLastIndex;
+
+    selectedIndex = nextIndex;
+    scrollOffset = nextPage * pageSize;
+    resetMenuMarquee();
+}
+
+// ================ 主菜单绘制 ================
+void drawMainMenu() {
+    const MenuLayout layout = getMenuLayout();
+    normalizeMenuSelection(layout);
+    resetMenuMarquee();
+    drawMenuStaticChrome(layout);
+    drawMenuList();
 }
 
 // ================ 暂停菜单绘制 ================
 void drawPauseMenu() {
     // 在游戏画面上绘制半透明遮罩
     // 由于硬件限制，我们用条纹效果模拟半透明
-    for (int y = 0; y < 240; y += 2) {
-        tft.drawFastHLine(TFT_OFFSET_X, y, SCREEN_WIDTH, PAUSE_OVERLAY_COLOR);
+    for (int y = 0; y < SCREEN_HEIGHT; y += 2) {
+        tft.drawFastHLine(TFT_OFFSET_X, TFT_OFFSET_Y + y, SCREEN_WIDTH, PAUSE_OVERLAY_COLOR);
     }
     
     // 暂停菜单框
     int menuWidth = 160;
     int menuHeight = 140;  // 增加高度以容纳更多选项
-    int menuX = (320 - menuWidth) / 2;
-    int menuY = (240 - menuHeight) / 2;
+    int menuX = (tft.width() - menuWidth) / 2;
+    int menuY = (tft.height() - menuHeight) / 2;
     
     // 背景
     tft.fillRect(menuX, menuY, menuWidth, menuHeight, MENU_BG_COLOR);
@@ -597,13 +828,15 @@ void drawPauseMenu() {
 // ================ 菜单输入处理 ================
 void handleMenuInput() {
     unsigned long now = millis();
-    if (now - lastButtonTime < BUTTON_DEBOUNCE) return;
-    
+    const MenuLayout layout = getMenuLayout();
     updateButtons();
-    
+    normalizeMenuSelection(layout);
+
+    bool shouldRedraw = false;
+
     if (romList.empty()) {
         // 无 ROM 或无 SD 卡时，A 键重试 SD 初始化
-        if (buttons.A) {
+        if (buttons.A && (now - lastButtonTime >= BUTTON_DEBOUNCE)) {
             lastButtonTime = now;
             SD.end();
             delay(100);
@@ -614,111 +847,120 @@ void handleMenuInput() {
         }
         return;
     }
-    
-    bool buttonPressed = false;
-    
-    // 上移选择
-    if (buttons.UP) {
-        if (selectedIndex > 0) {
+
+    if (now - lastButtonTime >= BUTTON_DEBOUNCE) {
+        bool buttonPressed = false;
+
+        if (buttons.LEFT) {
+            moveSelectionByPage(-1, layout);
+            buttonPressed = true;
+            shouldRedraw = true;
+        } else if (buttons.RIGHT) {
+            moveSelectionByPage(1, layout);
+            buttonPressed = true;
+            shouldRedraw = true;
+        } else if (buttons.UP) {
+            // 循环滚动：第一项继续向上回到最后一项
             selectedIndex--;
-            // 调整滚动
-            if (selectedIndex < scrollOffset) {
-                scrollOffset = selectedIndex;
-            }
+            if (selectedIndex < 0) selectedIndex = (int)romList.size() - 1;
+            normalizeMenuSelection(layout);
+            resetMenuMarquee();
             buttonPressed = true;
-        }
-    }
-    
-    // 下移选择
-    if (buttons.DOWN) {
-        if (selectedIndex < (int)romList.size() - 1) {
+            shouldRedraw = true;
+        } else if (buttons.DOWN) {
+            // 循环滚动：最后一项继续向下回到第一项
             selectedIndex++;
-            // 调整滚动
-            if (selectedIndex >= scrollOffset + ITEMS_PER_PAGE) {
-                scrollOffset = selectedIndex - ITEMS_PER_PAGE + 1;
+            if (selectedIndex >= (int)romList.size()) selectedIndex = 0;
+            normalizeMenuSelection(layout);
+            resetMenuMarquee();
+            buttonPressed = true;
+            shouldRedraw = true;
+        } else if (buttons.START || buttons.A) {
+            if (loadSelectedROM()) {
+                currentState = STATE_PLAYING;
             }
             buttonPressed = true;
         }
-    }
-    
-    // 确认选择
-    if (buttons.START || buttons.A) {
-        if (loadSelectedROM()) {
-            currentState = STATE_PLAYING;
+
+        if (buttonPressed) {
+            lastButtonTime = now;
         }
-        buttonPressed = true;
     }
-    
-    if (buttonPressed) {
-        lastButtonTime = now;
-        // 使用局部刷新减少闪烁
+
+    if (tickMenuMarquee(layout, now)) {
+        shouldRedraw = true;
+    }
+
+    if (shouldRedraw) {
         drawMenuList();
     }
 }
 
 // ================ 绘制菜单列表区域（局部刷新） ================
 void drawMenuList() {
-    int listStartY = 44;
-    int itemHeight = 20;
-    int listWidth = 280;
-    int listX = 20;
-    
-    // 清除列表区域
-    tft.fillRect(listX, listStartY, listWidth, ITEMS_PER_PAGE * itemHeight, MENU_BG_COLOR);
-    
-    if (romList.empty()) return;
-    
+    const MenuLayout layout = getMenuLayout();
+    normalizeMenuSelection(layout);
+
+    drawVerticalGradient(layout.listX, layout.listY, layout.listWidth, layout.listHeight, MENU_SURFACE_COLOR, MENU_SURFACE_COLOR_2);
     tft.setTextSize(1);
-    
-    for (int i = 0; i < ITEMS_PER_PAGE; i++) {
+    int maxChars = layout.textWidth / MENU_CHAR_WIDTH;
+    if (maxChars < 4) maxChars = 4;
+    unsigned long now = millis();
+
+    if (romList.empty()) {
+        tft.setTextColor(MENU_HINT_COLOR);
+        if (!sdCardAvailable) {
+            tft.setCursor((layout.panelWidth / 2) - 70, layout.listY + 46);
+            tft.print("No SD card detected");
+            tft.setCursor((layout.panelWidth / 2) - 90, layout.listY + 66);
+            tft.print("Insert SD card with .nes ROM files");
+            tft.setTextColor(MENU_SCROLL_THUMB);
+            tft.setCursor((layout.panelWidth / 2) - 72, layout.listY + 92);
+            tft.print("Press A to retry");
+        } else {
+            tft.setCursor((layout.panelWidth / 2) - 102, layout.listY + 56);
+            tft.print("No ROM files found on SD card");
+            tft.setCursor((layout.panelWidth / 2) - 72, layout.listY + 76);
+            tft.print("Please add .nes files");
+        }
+        drawMenuScrollbar(layout);
+        return;
+    }
+
+    for (int i = 0; i < layout.itemsPerPage; i++) {
         int romIndex = scrollOffset + i;
         if (romIndex >= (int)romList.size()) break;
-        
-        int itemY = listStartY + i * itemHeight;
-        
-        // 高亮选中项
+        int itemY = layout.listY + i * layout.itemHeight;
+        int rowWidth = layout.scrollbarX - layout.listX - 6;
+
         if (romIndex == selectedIndex) {
-            tft.fillRect(listX, itemY, listWidth, itemHeight - 1, MENU_HIGHLIGHT_BG);
-            
-            // 右侧箭头指示器
+            tft.fillRect(layout.listX + 2, itemY + 1, rowWidth, layout.itemHeight - 3, MENU_HIGHLIGHT_BG);
+            tft.fillRect(layout.listX + 2, itemY + 1, 4, layout.itemHeight - 3, MENU_SCROLL_THUMB);
             tft.setTextColor(MENU_ARROW_COLOR);
-            tft.setCursor(listX + listWidth - 20, itemY + 6);
-            tft.print("<");
-            
-            // 左侧也加箭头
-            tft.setCursor(listX + 4, itemY + 6);
+            tft.setCursor(layout.listX + rowWidth - 14, itemY + 7);
             tft.print(">");
-            
-            tft.setTextColor(MENU_TITLE_COLOR);
+            tft.setTextColor(MENU_TEXT_ACTIVE);
         } else {
             tft.setTextColor(MENU_TEXT_COLOR);
         }
-        
-        // 游戏名称（去掉路径和扩展名）
-        String displayName = romList[romIndex];
-        if (displayName.startsWith("/")) {
-            displayName = displayName.substring(1);
-        }
-        int dotPos = displayName.lastIndexOf('.');
-        if (dotPos > 0) {
-            displayName = displayName.substring(0, dotPos);
-        }
-        if (displayName.length() > 30) {
-            displayName = displayName.substring(0, 27) + "...";
-        }
-        
-        tft.setCursor(listX + 18, itemY + 6);
+
+        String displayName = getMenuItemText(romIndex, romIndex == selectedIndex, maxChars, now);
+        tft.setCursor(layout.textX, itemY + 7);
         tft.print(displayName);
     }
-    
-    // 更新分页信息
-    int totalPages = (romList.size() + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
-    int currentPage = scrollOffset / ITEMS_PER_PAGE + 1;
+
+    drawMenuScrollbar(layout);
+
+    // 更新分页信息与选中索引
+    int totalPages = (romList.size() + layout.itemsPerPage - 1) / layout.itemsPerPage;
+    int currentPage = selectedIndex / layout.itemsPerPage + 1;
+    int shownSelected = selectedIndex + 1;
+
     tft.setTextColor(MENU_HINT_COLOR);
-    tft.fillRect(260, listStartY + ITEMS_PER_PAGE * itemHeight + 2, 50, 14, MENU_BG_COLOR);
-    tft.setCursor(270, listStartY + ITEMS_PER_PAGE * itemHeight + 6);
-    char pageInfo[16];
-    snprintf(pageInfo, sizeof(pageInfo), "%d/%d", currentPage, totalPages);
+    tft.fillRect(layout.listX, layout.listY + layout.listHeight + 2, layout.listWidth, 14, MENU_BG_COLOR_2);
+    tft.setCursor(layout.listX + 4, layout.listY + layout.listHeight + 6);
+    char pageInfo[40];
+    snprintf(pageInfo, sizeof(pageInfo), "Page %d/%d  Item %d/%d", currentPage, totalPages, shownSelected, (int)romList.size());
     tft.print(pageInfo);
 }
 
@@ -764,8 +1006,7 @@ void handlePauseInput() {
             tft.fillScreen(TFT_BLACK);
             tft.setTextColor(MENU_TITLE_COLOR);
             tft.setTextSize(2);
-            tft.setCursor(80, 110);
-            tft.print("Saving...");
+            drawCenteredText("Saving...", 110);
             
             char savePath[128];
             getSaveStatePath(savePath, sizeof(savePath));
@@ -773,15 +1014,13 @@ void handlePauseInput() {
                 tft.fillScreen(TFT_BLACK);
                 tft.setTextColor(0x07E0);  // 绿色成功提示
                 tft.setTextSize(2);
-                tft.setCursor(60, 110);
-                tft.print("State Saved!");
+                drawCenteredText("State Saved!", 110);
                 delay(1000);
             } else {
                 tft.fillScreen(TFT_BLACK);
                 tft.setTextColor(0xF800);  // 红色错误提示
                 tft.setTextSize(2);
-                tft.setCursor(60, 110);
-                tft.print("Save Failed!");
+                drawCenteredText("Save Failed!", 110);
                 delay(1500);
             }
             
@@ -795,8 +1034,7 @@ void handlePauseInput() {
             tft.fillScreen(TFT_BLACK);
             tft.setTextColor(MENU_TITLE_COLOR);
             tft.setTextSize(2);
-            tft.setCursor(80, 110);
-            tft.print("Loading...");
+            drawCenteredText("Loading...", 110);
             
             char savePath[128];
             getSaveStatePath(savePath, sizeof(savePath));
@@ -804,19 +1042,16 @@ void handlePauseInput() {
                 tft.fillScreen(TFT_BLACK);
                 tft.setTextColor(0x07E0);  // 绿色成功提示
                 tft.setTextSize(2);
-                tft.setCursor(60, 110);
-                tft.print("State Loaded!");
+                drawCenteredText("State Loaded!", 110);
                 delay(1000);
             } else {
                 tft.fillScreen(TFT_BLACK);
                 tft.setTextColor(0xF800);  // 红色错误提示
                 tft.setTextSize(2);
-                tft.setCursor(60, 110);
-                tft.print("Load Failed!");
+                drawCenteredText("Load Failed!", 110);
                 tft.setTextColor(MENU_HINT_COLOR);
                 tft.setTextSize(1);
-                tft.setCursor(50, 140);
-                tft.print("No save state found");
+                drawCenteredText("No save state found", 140);
                 delay(1500);
             }
             
@@ -867,24 +1102,19 @@ bool loadSelectedROM() {
     tft.fillScreen(TFT_BLACK);
     tft.setTextColor(MENU_TITLE_COLOR);
     tft.setTextSize(2);
-    tft.setCursor(100, 110);
-    tft.print("Loading...");
+    drawCenteredText("Loading...", 110);
     
     if (!nes.loadROM(romPath)) {
         Serial.printf("Failed to load ROM: %s\n", romPath);
         tft.fillScreen(TFT_BLACK);
         tft.setTextColor(0xF800);  // 红色错误提示
         tft.setTextSize(2);
-        tft.setCursor(60, 100);
-        tft.print("Load Failed!");
+        drawCenteredText("Load Failed!", 100);
         tft.setTextColor(MENU_HINT_COLOR);
         tft.setTextSize(1);
-        tft.setCursor(40, 130);
-        tft.print("Unsupported mapper or bad ROM");
-        tft.setCursor(50, 150);
-        tft.print("Supported: Mapper 0-4");
-        tft.setCursor(60, 170);
-        tft.print("Returning to menu...");
+        drawCenteredText("Unsupported mapper or bad ROM", 130);
+        drawCenteredText("Supported: 0,1,2,3,4,5,7,9,10,18,19,22,23,24,25,32,41,48,52,66,69,71,90,94,99,148,180,202,206,227", 150);
+        drawCenteredText("Returning to menu...", 170);
         delay(3000);
         tft.fillScreen(MENU_BG_COLOR);
         drawMainMenu();
@@ -896,7 +1126,21 @@ bool loadSelectedROM() {
     // 应用抽帧开关设置
     nes.setFrameskipEnabled(ENABLE_FRAMESKIP);
     
-    // 设置 PPU 的帧缓冲
+    // 设置 PPU 的帧缓冲（允许单缓冲模式）
+    int fbIdx = firstValidFrameBufferIndex();
+    if (fbIdx < 0) {
+        Serial.println("No frame buffer available");
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(0xF800);
+        tft.setTextSize(2);
+        drawCenteredText("No Video Buffer", 105);
+        tft.setTextColor(MENU_HINT_COLOR);
+        tft.setTextSize(1);
+        drawCenteredText("Reboot and try again", 135);
+        delay(2000);
+        return false;
+    }
+    render_buf_idx = (uint8_t)fbIdx;
     nes.getPPU().frameBuffer = frame_buf[render_buf_idx];
     
     // 彻底清屏为黑色 (清除菜单残留)
@@ -944,7 +1188,7 @@ static void initializeAudio() {
         .sample_rate = AUDIO_SAMPLE_RATE,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
         .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-        .communication_format = (i2s_comm_format_t)I2S_COMM_FORMAT_I2S_MSB,
+        .communication_format = (i2s_comm_format_t)I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = 0,
         .dma_buf_count = 4,
         .dma_buf_len = 256,
@@ -1117,14 +1361,11 @@ void loop() {
         tft.fillScreen(TFT_BLACK);
         tft.setTextColor(0xF800);
         tft.setTextSize(2);
-        tft.setCursor(58, 95);
-        tft.print("Game Start Failed");
+        drawCenteredText("Game Start Failed", 95);
         tft.setTextColor(MENU_HINT_COLOR);
         tft.setTextSize(1);
-        tft.setCursor(42, 130);
-        tft.print("Unsupported or unstable ROM");
-        tft.setCursor(65, 150);
-        tft.print("Returning to menu...");
+        drawCenteredText("Unsupported or unstable ROM", 130);
+        drawCenteredText("Returning to menu...", 150);
         delay(3000);
         tft.fillScreen(MENU_BG_COLOR);
         drawMainMenu();

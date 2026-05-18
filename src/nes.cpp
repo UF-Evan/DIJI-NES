@@ -5,7 +5,7 @@ bool NES::loadROM(const char* path) {
     cpu.connect(this);
     ppu.connect(this);
     
-    // 保存 ROM 路径
+    // ?? ROM ??
     strncpy(currentRomPath, path, sizeof(currentRomPath) - 1);
     currentRomPath[sizeof(currentRomPath) - 1] = '\0';
     
@@ -21,14 +21,14 @@ void NES::reset() {
     controllerShift[0] = controllerShift[1] = 0;
     controllerStrobe = false;
     
-    // 缓存镜像模式
+    // ??????
     mirrorVertical = cart.getMirrorVertical();
     
-    // 让 Cartridge 知道 VRAM 指针以及绑定 NES（用于 MMC3 动态镜像与 IRQ）
+    // ? Cartridge ?? VRAM ?????? NES??? MMC3 ????? IRQ?
     cart.setVramPointer(vram);
     cart.setNES(this);
 
-    // 给 PPU 设置直接内存访问指针
+    // ? PPU ??????????
     ppu.setMemoryPointers(vram, palette, &cart, &mirrorVertical);
     
     cpu.reset();
@@ -39,104 +39,106 @@ void NES::reset() {
 /**
  * NES::step()
  * ----------------------------------------------------------------------------
- * 标准 CPU 指令级驱动：
- *   - 执行 1 条 CPU 指令
- *   - 完整推进 cpuCycles * 3 个 PPU cycle
- *   - 不在扫描线边界提前返回
+ * ?? CPU ??????
+ *   - ?? 1 ? CPU ??
+ *   - ???? cpuCycles * 3 ? PPU cycle
+ *   - ???????????
  *
- * 特点：
+ * ???
  *   - instruction-accurate
- *   - cycle-accurate（CPU:PPU = 1:3）
- *   - 性能最慢，但语义最“正统”
+ *   - cycle-accurate?CPU:PPU = 1:3?
+ *   - ?????????????
  */
 uint8_t IRAM_ATTR NES::step() {
-    // 1. 执行一条 CPU 指令
+    // 1. ???? CPU ??
     uint8_t cpuCycles = cpu.step();
+    cart.clockCpuCycles(cpuCycles);
 
-    // 2. 将 CPU 周期转换为 PPU 周期
+    // 2. ? CPU ????? PPU ??
     int ppuCycles = cpuCycles * 3;
 
-    // 3. 行级推进 PPU：在跨越扫描线末尾时提前返回
+    // 3. ???? PPU??????????????
     while (ppuCycles > 0) {
-        int dot = ppu.getCurrentDot();           // 当前扫描线内的 dot
-        int remainInLine = 341 - dot;            // 当前扫描线剩余 dot 数
+        int dot = ppu.getCurrentDot();           // ??????? dot
+        int remainInLine = 341 - dot;            // ??????? dot ?
         int step = (ppuCycles < remainInLine) ? ppuCycles : remainInLine;
 
-        // 推进 PPU step 个周期
+        // ?? PPU step ???
         ppu.advanceCycles(step);
 
-        // 扣掉已推进的 PPU 周期
+        // ?????? PPU ??
         ppuCycles -= step;
 
-        // 如果推进到扫描线末尾，提前返回，让 CPU 有机会下一次继续
+        // ????????????????? CPU ????????
         if (step >= remainInLine) {
             break;
         }
     }
 
-    // 4. 检查 NMI（VBlank + NMI 使能）
+    // 4. ?? NMI?VBlank + NMI ???
     if (ppu.isNmiPending()) {
         ppu.clearNmiPending();
         cpu.nmi();
     }
 
-    // 5. 检查 Mapper IRQ
+    // 5. ?? Mapper IRQ
     if (cart.irqPending()) {
         cart.acknowledgeIrq();
         cpu.irq();
     }
 
-    // 6. 返回 CPU 周期
+    // 6. ?? CPU ??
     return cpuCycles;
 }
 
 /**
  * NES::stepScanline()
  * ----------------------------------------------------------------------------
- * 【粒度：单条扫描线】
+ * ??????????
  *
- * 执行“正好一条扫描线”所需的 CPU 周期：
- *   - 使用 113 / 114 CPU 周期交替，近似 113.666...
- *   - 每执行一条 CPU 指令，就同步推进 PPU（×3）
- *   - 在过程中实时响应：
- *       - NMI（VBlank）
- *       - Mapper IRQ（如 MMC3）
+ * ?????????????? CPU ???
+ *   - ?? 113 / 114 CPU ??????? 113.666...
+ *   - ????? CPU ???????? PPU??3?
+ *   - ?????????
+ *       - NMI?VBlank?
+ *       - Mapper IRQ?? MMC3?
  *
- * 用途：
- *   - 行级精度（Sprite 0 Hit、MMC3 IRQ）
- *   - 比 step() 快得多，但仍保持行对齐
+ * ???
+ *   - ?????Sprite 0 Hit?MMC3 IRQ?
+ *   - ? step() ???????????
  *
- * 特点：
- *   ✅ 行级准确
- *   ✅ 性能与准确度的平衡点
- *   ❌ 仍然有一定函数调用开销
+ * ???
+ *   ? ????
+ *   ? ??????????
+ *   ? ???????????
  */
 void IRAM_ATTR NES::stepScanline() {
-    // =期数在真实 NES 上为约 113.666...
-    // 使用 113/114 交替近似
+    // =????? NES ??? 113.666...
+    // ?? 113/114 ????
     int target = scanlineParity ? 114 : 113;
     int executed = 0;
 
     while (executed < target) {
         uint8_t c = cpu.step();
+        cart.clockCpuCycles(c);
         executed += c;
-        // 推进 PPU（CPU 周期 ×3）
+        // ?? PPU?CPU ?? ?3?
         ppu.advanceCycles(c * 3);
 
-        // 检查 NMI
+        // ?? NMI
         if (ppu.isNmiPending()) {
             ppu.clearNmiPending();
             cpu.nmi();
         }
 
-        // MMC3 IRQ 检测
+        // MMC3 IRQ ??
         if (cart.irqPending()) {
             cart.acknowledgeIrq();
             cpu.irq();
         }
     }
 
-    // 切换用于下一行的周期数（113/114 交替）
+    // ????????????113/114 ???
     scanlineParity = !scanlineParity;
 }
 
@@ -151,67 +153,67 @@ void IRAM_ATTR NES::stepScanline() {
 /**
  * NES::clock(bool skipRender)
  * ----------------------------------------------------------------------------
- * 【粒度：整帧（Frame-based 调度）】
+ * ???????Frame-based ????
  *
- * 高性能帧调度器（Anemoia 风格）：
- *   - 可见区：0–239 扫描线
- *       * 每 3 行为一组：113 + 114 + 114 CPU 周期
- *       * 行开始时触发 MMC3 IRQ
- *       * 按需调用 renderLine（支持 frameskip）
+ * ????????Anemoia ????
+ *   - ????0?239 ???
+ *       * ? 3 ?????113 + 114 + 114 CPU ??
+ *       * ?????? MMC3 IRQ
+ *       * ???? renderLine??? frameskip?
  *
- *   - Post-render 行（240）：113 CPU 周期
+ *   - Post-render ??240??113 CPU ??
  *
- *   - VBlank（241–260）：
- *       * 设置 VBlank 标志
- *       * 触发 NMI（如果使能）
- *       * 一次性执行 2501 CPU 周期
+ *   - VBlank?241?260??
+ *       * ?? VBlank ??
+ *       * ?? NMI??????
+ *       * ????? 2501 CPU ??
  *
- *   - Pre-render 行（261）：
- *       * 清除 VBlank / Sprite 0 Hit
+ *   - Pre-render ??261??
+ *       * ?? VBlank / Sprite 0 Hit
  *
- * 用途：
- *   - 实际跑游戏的主循环
- *   - 支持 frameskip / 抽帧
- *   - 在 ESP32 上追求最高 FPS
+ * ???
+ *   - ?????????
+ *   - ?? frameskip / ??
+ *   - ? ESP32 ????? FPS
  *
- * 特点：
- *   ✅ 性能最好
- *   ✅ 与主流模拟器策略一致
- *   ❌ 不再是“指令级精确”，而是“行/帧级正确”
+ * ???
+ *   ? ????
+ *   ? ??????????
+ *   ? ???????????????/?????
  *
- * 设计取舍：
- *   - MMC3 IRQ / Sprite 0 Hit：行级正确即可
- *   - CPU/PPU cycle 精度：为性能让步
+ * ?????
+ *   - MMC3 IRQ / Sprite 0 Hit???????
+ *   - CPU/PPU cycle ????????
  */
 void IRAM_ATTR NES::clock() {
-    // 自适应抽帧：仅在主循环显式请求时才跳过当前帧渲染，
-    // 避免和游戏自身的闪烁节奏锁相，导致角色长期不可见。
+    // ?????????????????????????
+    // ?????????????????????????
     bool skipRender = frameskipEnabled && skipNextFrame;
     skipNextFrame = false;
     
-    // 获取 Sprite 0 的 Y 范围（用于优化跳帧检测）
+    // ?? Sprite 0 ? Y ????????????
     int sprite0StartY = -1, sprite0EndY = -1;
     bool needSprite0Check = false;
     
     if (skipRender && ((ppu.getPpuMask() & 0x18) == 0x18)) {
-        // 跳帧 + 背景和精灵都启用，需要检测 Sprite 0 Hit
+        // ?? + ????????????? Sprite 0 Hit
         ppu.getSprite0YRange(sprite0StartY, sprite0EndY);
-        // 只有 Sprite 0 在可见区域内才需要检测
+        // ?? Sprite 0 ???????????
         needSprite0Check = (sprite0StartY >= 0 && sprite0StartY < 240 && sprite0EndY > 0);
     }
     
-    // 关键：跳帧时也必须初始化 PPU 帧状态（调色板 + vramAddr = tempAddr）
-    // MMC3 游戏依赖正确的滚动状态来触发 IRQ 和 bank 切换
+    // ???????????? PPU ??????? + vramAddr = tempAddr?
+    // MMC3 ?????????????? IRQ ? bank ??
     if (skipRender) {
         ppu.initFrameForSprite0Check();
     }
     
-    // 可见扫描线 0-239 (每 3 行一组)
-    // 时序顺序: PPU渲染 → IRQ时钟(扫描线末尾) → IRQ分发 → CPU执行
-    // 这确保 IRQ handler 在 cpu.clock() 中执行，其滚动/bank 修改
-    // 能在下一条扫描线的 renderLine() 中生效
+    // ????? 0-239 (? 3 ???)
+    // ????: PPU?? ? IRQ??(?????) ? IRQ?? ? CPU??
+    // ??? IRQ handler ? cpu.clock() ???????/bank ??
+    // ????????? renderLine() ???
     for (int scanline = 0; scanline < 240; scanline += 3) {
-        // 行 0
+        // ? 0
         if (!skipRender) {
             ppu.renderLine(scanline, ppu.frameBuffer + scanline * 256);
         } else {
@@ -221,13 +223,13 @@ void IRAM_ATTR NES::clock() {
             }
             ppu.skipScanlineForScrollUpdate();
         }
-        // MMC3 IRQ: 只在 PPU 渲染启用时时钟计数器 (A12 需要渲染活动才会翻转)
-        // 但 pending IRQ 无论渲染状态都应被 CPU 接收
-        if (ppu.getPpuMask() & 0x18) cart.clockIrqCounter();
+        // MMC3 IRQ counter is clocked by PPU renderLine()/A12 observation path.
+        // Avoid legacy double-clock here.
         if (cart.irqPending()) cpu.irq();
         cpu.clock(113);
+        cart.clockCpuCycles(113);
         
-        // 行 1
+        // ? 1
         if (!skipRender) {
             ppu.renderLine(scanline + 1, ppu.frameBuffer + (scanline + 1) * 256);
         } else {
@@ -237,11 +239,11 @@ void IRAM_ATTR NES::clock() {
             }
             ppu.skipScanlineForScrollUpdate();
         }
-        if (ppu.getPpuMask() & 0x18) cart.clockIrqCounter();
         if (cart.irqPending()) cpu.irq();
         cpu.clock(114);
+        cart.clockCpuCycles(114);
         
-        // 行 2
+        // ? 2
         if (!skipRender) {
             ppu.renderLine(scanline + 2, ppu.frameBuffer + (scanline + 2) * 256);
         } else {
@@ -251,37 +253,39 @@ void IRAM_ATTR NES::clock() {
             }
             ppu.skipScanlineForScrollUpdate();
         }
-        if (ppu.getPpuMask() & 0x18) cart.clockIrqCounter();
         if (cart.irqPending()) cpu.irq();
         cpu.clock(114);
+        cart.clockCpuCycles(114);
     }
     
-    // 扫描线 240: Post-render (113 CPU 周期)
+    // ??? 240: Post-render (113 CPU ??)
     cpu.clock(113);
+    cart.clockCpuCycles(113);
     
-    // 扫描线 241-260: VBlank
+    // ??? 241-260: VBlank
     ppu.setVBlank(true);
     if (ppu.nmiEnabled()) {
         cpu.nmi();
     }
-    cpu.clock(2274);  // VBlank 期间的 CPU 周期 (20 scanlines × ~113.67)
+    cpu.clock(2274);  // VBlank ??? CPU ?? (20 scanlines ? ~113.67)
+    cart.clockCpuCycles(2274);
     
-    // 扫描线 261: Pre-render
+    // ??? 261: Pre-render
     ppu.setVBlank(false);
-    ppu.clearSprite0Hit();  // 清除 Sprite 0 Hit
-    // Pre-render 扫描线也触发 MMC3 IRQ 时钟 (A12 脉冲)
-    if (ppu.getPpuMask() & 0x18) cart.clockIrqCounter();
+    ppu.clearSprite0Hit();  // ?? Sprite 0 Hit
+    // Pre-render MMC3 IRQ counter is handled in PPU path as well.
     if (cart.irqPending()) cpu.irq();
     cpu.clock(114);
+    cart.clockCpuCycles(114);
     
-    // 设置帧完成标志
+    // ???????
     ppu.frameReady = true;
     ppu.renderedThisFrame = !skipRender;
     
 }
 
 /**
- * 渲染单条扫描线 (用于 DMA 逐行输出)
+ * ??????? (?? DMA ????)
  */
 void NES::renderLine(int scanline, uint16_t* lineBuffer) {
     ppu.renderLine(scanline, lineBuffer);
@@ -292,8 +296,8 @@ void NES::render(uint16_t* fb) {
 }
 
 void NES::endFrame() {
-    // 精确时序模式下，NMI 由 PPU::advanceCycles() 在正确时刻触发
-    // 此函数保留用于兼容性，但不再需要手动触发 NMI
+    // ????????NMI ? PPU::advanceCycles() ???????
+    // ???????????????????? NMI
 }
 
 void NES::setController(uint8_t id, uint8_t state) {
@@ -302,18 +306,18 @@ void NES::setController(uint8_t id, uint8_t state) {
     }
 }
 
-// ==================== CPU 总线 ====================
+// ==================== CPU ?? ====================
 uint8_t IRAM_ATTR NES::cpuRead(uint16_t addr) {
     if (addr < 0x2000) {
-        // $0000-$1FFF: 2KB RAM (镜像 4 次)
+        // $0000-$1FFF: 2KB RAM (?? 4 ?)
         return ram[addr & 0x07FF];
     }
     else if (addr < 0x4000) {
-        // $2000-$3FFF: PPU 寄存器 (8 字节，镜像)
+        // $2000-$3FFF: PPU ??? (8 ?????)
         return ppu.regRead(addr & 0x0007);
     }
     else if (addr == 0x4016) {
-        // 控制器 1
+        // ??? 1
         if (controllerStrobe) {
             return 0x40 | (controller[0] & 0x01);
         }
@@ -322,7 +326,7 @@ uint8_t IRAM_ATTR NES::cpuRead(uint16_t addr) {
         return 0x40 | bit;
     }
     else if (addr == 0x4017) {
-        // 控制器 2
+        // ??? 2
         if (controllerStrobe) {
             return 0x40 | (controller[1] & 0x01);
         }
@@ -331,11 +335,11 @@ uint8_t IRAM_ATTR NES::cpuRead(uint16_t addr) {
         return 0x40 | bit;
     }
     else if (addr < 0x4020) {
-        // $4000-$401F: APU 和其他 I/O
-        // 转发到 APU 寄存器读取
+        // $4000-$401F: APU ??? I/O
+        // ??? APU ?????
         return apu.regRead(addr);
     }
-    else if (addr >= 0x6000) {
+    else if (addr >= 0x4020) {
         // $6000-$FFFF: Cartridge (SRAM $6000-$7FFF + PRG ROM $8000-$FFFF)
         return cart.cpuRead(addr);
     }
@@ -344,11 +348,11 @@ uint8_t IRAM_ATTR NES::cpuRead(uint16_t addr) {
 
 void IRAM_ATTR NES::cpuWrite(uint16_t addr, uint8_t val) {
     if (addr < 0x2000) {
-        // $0000-$1FFF: 2KB RAM (镜像 4 次)
+        // $0000-$1FFF: 2KB RAM (?? 4 ?)
         ram[addr & 0x07FF] = val;
     }
     else if (addr < 0x4000) {
-        // $2000-$3FFF: PPU 寄存器 (8 字节，镜像)
+        // $2000-$3FFF: PPU ??? (8 ?????)
         ppu.regWrite(addr & 0x0007, val);
     }
     else if (addr == 0x4014) {
@@ -356,10 +360,10 @@ void IRAM_ATTR NES::cpuWrite(uint16_t addr, uint8_t val) {
         ppu.oamDMA(val, ram);
     }
     else if (addr == 0x4016) {
-        // 控制器 Strobe
+        // ??? Strobe
         bool newStrobe = (val & 0x01) != 0;
         if (controllerStrobe && !newStrobe) {
-            // Strobe 下降沿: 锁存当前按键状态
+            // Strobe ???: ????????
             controllerLatch[0] = controller[0];
             controllerLatch[1] = controller[1];
             controllerShift[0] = 0;
@@ -368,18 +372,18 @@ void IRAM_ATTR NES::cpuWrite(uint16_t addr, uint8_t val) {
         controllerStrobe = newStrobe;
     }
     else if (addr < 0x4020) {
-        // $4000-$401F: APU 寄存器 (转发到 APU)
+        // $4000-$401F: APU ??? (??? APU)
         apu.regWrite(addr, val);
     }
-    else if (addr >= 0x6000) {
-        // $6000-$7FFF: SRAM 写入, $8000+: Mapper 写入
+    else if (addr >= 0x4020) {
+        // $6000-$7FFF: SRAM ??, $8000+: Mapper ??
         cart.cpuWrite(addr, val);
     }
 }
 
-// ==================== PPU 总线 ====================
+// ==================== PPU ?? ====================
 uint8_t IRAM_ATTR NES::ppuRead(uint16_t addr) {
-    addr &= 0x3FFF;  // PPU 地址空间是 14 位
+    addr &= 0x3FFF;  // PPU ????? 14 ?
     
     if (addr < 0x2000) {
         // $0000-$1FFF: CHR ROM/RAM (Pattern Tables)
@@ -387,26 +391,12 @@ uint8_t IRAM_ATTR NES::ppuRead(uint16_t addr) {
     }
     else if (addr < 0x3F00) {
         // $2000-$3EFF: Nametables (with mirroring)
-        uint16_t vramAddr = addr & 0x0FFF;
-        
-        // 处理镜像
-        if (cart.getMirrorVertical()) {
-            // 垂直镜像: $2000=$2800, $2400=$2C00
-            vramAddr = vramAddr & 0x07FF;
-        } else {
-            // 水平镜像: $2000=$2400, $2800=$2C00
-            if (vramAddr >= 0x0800) {
-                vramAddr = (vramAddr & 0x03FF) | 0x0400;
-            } else {
-                vramAddr = vramAddr & 0x03FF;
-            }
-        }
-        return vram[vramAddr & 0x07FF];
+        return cart.readNameTable(addr & 0x0FFF);
     }
     else {
         // $3F00-$3FFF: Palette RAM
         uint8_t palAddr = addr & 0x1F;
-        // 镜像: $3F10/$3F14/$3F18/$3F1C 映射到 $3F00/$3F04/$3F08/$3F0C
+        // ??: $3F10/$3F14/$3F18/$3F1C ??? $3F00/$3F04/$3F08/$3F0C
         if ((palAddr & 0x13) == 0x10) {
             palAddr &= 0x0F;
         }
@@ -418,23 +408,12 @@ void IRAM_ATTR NES::ppuWrite(uint16_t addr, uint8_t val) {
     addr &= 0x3FFF;
     
     if (addr < 0x2000) {
-        // $0000-$1FFF: CHR RAM (如果是 RAM)
+        // $0000-$1FFF: CHR RAM (??? RAM)
         cart.ppuWrite(addr, val);
     }
     else if (addr < 0x3F00) {
         // $2000-$3EFF: Nametables
-        uint16_t vramAddr = addr & 0x0FFF;
-        
-        if (cart.getMirrorVertical()) {
-            vramAddr = vramAddr & 0x07FF;
-        } else {
-            if (vramAddr >= 0x0800) {
-                vramAddr = (vramAddr & 0x03FF) | 0x0400;
-            } else {
-                vramAddr = vramAddr & 0x03FF;
-            }
-        }
-        vram[vramAddr & 0x07FF] = val;
+        cart.writeNameTable(addr & 0x0FFF, val);
     }
     else {
         // $3F00-$3FFF: Palette RAM
@@ -450,41 +429,41 @@ void IRAM_ATTR NES::ppuWrite(uint16_t addr, uint8_t val) {
 // Save State
 // ============================================================================
 
-// 魔数和版本号用于验证存档
+// ????????????
 static const uint32_t SAVESTATE_MAGIC = 0x4E455353;  // "NESS"
 static const uint16_t SAVESTATE_VERSION = 1;
 
 size_t NES::getStateSize() const {
     size_t size = 0;
     
-    // 头部
+    // ??
     size += sizeof(SAVESTATE_MAGIC);
     size += sizeof(SAVESTATE_VERSION);
     
     // CPU RAM
     size += sizeof(ram);
     
-    // PPU VRAM 和调色板
+    // PPU VRAM ????
     size += sizeof(vram);
     size += sizeof(palette);
     size += sizeof(mirrorVertical);
     
-    // 控制器状态
+    // ?????
     size += sizeof(controller);
     size += sizeof(controllerLatch);
     size += sizeof(controllerShift);
     size += sizeof(controllerStrobe);
     
-    // CPU 状态
+    // CPU ??
     size += cpu.getStateSize();
     
-    // PPU 状态
+    // PPU ??
     size += ppu.getStateSize();
     
-    // APU 状态
+    // APU ??
     size += apu.getStateSize();
     
-    // Cartridge 状态
+    // Cartridge ??
     size += cart.getStateSize();
     
     return size;
@@ -499,7 +478,7 @@ bool NES::saveStateToMemory(uint8_t* buffer, size_t bufferSize) {
     
     size_t offset = 0;
     
-    // 写入魔数和版本
+    // ???????
     buffer[offset++] = (SAVESTATE_MAGIC >> 0) & 0xFF;
     buffer[offset++] = (SAVESTATE_MAGIC >> 8) & 0xFF;
     buffer[offset++] = (SAVESTATE_MAGIC >> 16) & 0xFF;
@@ -511,14 +490,14 @@ bool NES::saveStateToMemory(uint8_t* buffer, size_t bufferSize) {
     memcpy(buffer + offset, ram, sizeof(ram));
     offset += sizeof(ram);
     
-    // PPU VRAM 和调色板
+    // PPU VRAM ????
     memcpy(buffer + offset, vram, sizeof(vram));
     offset += sizeof(vram);
     memcpy(buffer + offset, palette, sizeof(palette));
     offset += sizeof(palette);
     buffer[offset++] = mirrorVertical ? 1 : 0;
     
-    // 控制器状态
+    // ?????
     memcpy(buffer + offset, controller, sizeof(controller));
     offset += sizeof(controller);
     memcpy(buffer + offset, controllerLatch, sizeof(controllerLatch));
@@ -527,16 +506,16 @@ bool NES::saveStateToMemory(uint8_t* buffer, size_t bufferSize) {
     offset += sizeof(controllerShift);
     buffer[offset++] = controllerStrobe ? 1 : 0;
     
-    // CPU 状态
+    // CPU ??
     cpu.saveState(buffer, offset);
     
-    // PPU 状态
+    // PPU ??
     ppu.saveState(buffer, offset);
     
-    // APU 状态
+    // APU ??
     apu.saveState(buffer, offset);
     
-    // Cartridge 状态
+    // Cartridge ??
     cart.saveState(buffer, offset);
     
     Serial.printf("SaveState: Saved %d bytes\n", offset);
@@ -551,7 +530,7 @@ bool NES::loadStateFromMemory(const uint8_t* buffer, size_t bufferSize) {
     
     size_t offset = 0;
     
-    // 验证魔数
+    // ????
     uint32_t magic = buffer[offset] | (buffer[offset + 1] << 8) | 
                      (buffer[offset + 2] << 16) | (buffer[offset + 3] << 24);
     offset += 4;
@@ -561,7 +540,7 @@ bool NES::loadStateFromMemory(const uint8_t* buffer, size_t bufferSize) {
         return false;
     }
     
-    // 验证版本
+    // ????
     uint16_t version = buffer[offset] | (buffer[offset + 1] << 8);
     offset += 2;
     
@@ -574,14 +553,14 @@ bool NES::loadStateFromMemory(const uint8_t* buffer, size_t bufferSize) {
     memcpy(ram, buffer + offset, sizeof(ram));
     offset += sizeof(ram);
     
-    // PPU VRAM 和调色板
+    // PPU VRAM ????
     memcpy(vram, buffer + offset, sizeof(vram));
     offset += sizeof(vram);
     memcpy(palette, buffer + offset, sizeof(palette));
     offset += sizeof(palette);
     mirrorVertical = buffer[offset++] != 0;
     
-    // 控制器状态
+    // ?????
     memcpy(controller, buffer + offset, sizeof(controller));
     offset += sizeof(controller);
     memcpy(controllerLatch, buffer + offset, sizeof(controllerLatch));
@@ -590,20 +569,20 @@ bool NES::loadStateFromMemory(const uint8_t* buffer, size_t bufferSize) {
     offset += sizeof(controllerShift);
     controllerStrobe = buffer[offset++] != 0;
     
-    // CPU 状态
+    // CPU ??
     cpu.loadState(buffer, offset);
     
-    // PPU 状态
+    // PPU ??
     ppu.loadState(buffer, offset);
     
-    // APU 状态
+    // APU ??
     apu.loadState(buffer, offset);
     
-    // Cartridge 状态
+    // Cartridge ??
     cart.loadState(buffer, offset);
     
-    // 重新设置 PPU 内存指针
-    // 确保 Cartridge 也能访问 VRAM 并绑定 NES
+    // ???? PPU ????
+    // ?? Cartridge ???? VRAM ??? NES
     cart.setVramPointer(vram);
     cart.setNES(this);
     ppu.setMemoryPointers(vram, palette, &cart, &mirrorVertical);
@@ -613,7 +592,7 @@ bool NES::loadStateFromMemory(const uint8_t* buffer, size_t bufferSize) {
 }
 
 bool NES::saveState(const char* path) {
-    // 分配缓冲区
+    // ?????
     size_t stateSize = getStateSize();
     uint8_t* buffer = (uint8_t*)ps_malloc(stateSize);
     if (!buffer) {
@@ -624,14 +603,14 @@ bool NES::saveState(const char* path) {
         return false;
     }
     
-    // 保存到内存
+    // ?????
     bool success = saveStateToMemory(buffer, stateSize);
     if (!success) {
         free(buffer);
         return false;
     }
     
-    // 写入文件
+    // ????
     File f = SD.open(path, FILE_WRITE);
     if (!f) {
         Serial.printf("SaveState: Failed to create file %s\n", path);
@@ -661,7 +640,7 @@ bool NES::loadState(const char* path) {
     
     size_t fileSize = f.size();
     
-    // 分配缓冲区
+    // ?????
     uint8_t* buffer = (uint8_t*)ps_malloc(fileSize);
     if (!buffer) {
         buffer = (uint8_t*)malloc(fileSize);
@@ -672,7 +651,7 @@ bool NES::loadState(const char* path) {
         return false;
     }
     
-    // 读取文件
+    // ????
     size_t bytesRead = f.read(buffer, fileSize);
     f.close();
     
@@ -682,7 +661,7 @@ bool NES::loadState(const char* path) {
         return false;
     }
     
-    // 加载状态
+    // ????
     bool success = loadStateFromMemory(buffer, fileSize);
     free(buffer);
     

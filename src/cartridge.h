@@ -1,8 +1,11 @@
+/*
+ * Cartridge abstraction and ROM metadata/state declarations.
+ */
+
 #pragma once
 #include <Arduino.h>
 #include <SD.h>
 
-// Forward declaration for save state
 class NES;
 
 class Cartridge {
@@ -17,123 +20,346 @@ public:
     uint8_t IRAM_ATTR ppuRead(uint16_t addr);
     void ppuWrite(uint16_t addr, uint8_t val);
     
-    // 设置 VRAM 指针（用于 NameTable 读取时处理动态镜像）
-    void setVramPointer(uint8_t* vramPtr) { vram = vramPtr; updateNtPtrs(); }
     
-    // NameTable 读取（处理动态镜像，MMC3 可在运行时切换）
+    void setVramPointer(uint8_t* vramPtr) { vram = vramPtr; updateNtPtrs(); if (mapper == 19) updateChrBankCache(); }
+    
+    
     uint8_t IRAM_ATTR readNameTable(uint16_t addr);
+    void IRAM_ATTR writeNameTable(uint16_t addr, uint8_t val);
     
-    // ROM 信息
+    
     uint8_t getPrgBanks() const { return prgBanks; }
     uint8_t getChrBanks() const { return chrBanks; }
     uint8_t getMapper() const { return mapper; }
     bool getMirrorVertical() const { return mirrorVertical; }
     bool hasChrRam() const { return chrBanks == 0; }
     bool hasSRAM() const { return hasBattery; }
+    bool shouldDisableFrameskip() const { return mapper == 7; }
     
-    // 直接 CHR 访问 (用于 PPU 快速渲染)
+    
     uint8_t* getChrData() { return chrWindow; }
     
-    // 镜像模式设置 (用于 MMC1/MMC3)
+    
     void setMirrorVertical(bool v) { mirrorVertical = v; updateNtPtrs(); }
     
-    // IRQ 接口 (用于 MMC3)
+    
     bool irqPending() const { return mmc3IrqPending; }
     void acknowledgeIrq() { mmc3IrqPending = false; }
-    void IRAM_ATTR clockIrqCounter();  // 每条扫描线调用
-    void IRAM_ATTR ppuScanline();      // 简化的扫描线 IRQ 触发 (Anemoia 风格)
+    bool usesMmc3ScanlineClock() const { return false; }
+    bool needsPpuAddressObserve() const { return mapper == 4 || mapper == 9 || mapper == 10 || mapper == 64 || mapper == 118 || mapper == 119 || mapper == 163; }
+    void IRAM_ATTR clockIrqCounter();  
+    void IRAM_ATTR ppuScanline();      
+    void IRAM_ATTR observePpuAddress(uint16_t ppuAddr);
+    void IRAM_ATTR clockCpuCycles(uint32_t cpuCycles);
+    void finalizeMmc3Scanline(bool renderingEnabled, uint8_t ppuCtrl);
 
-    // 绑定 NES 实例（用于在 MMC3 IRQ 触发时调用 CPU IRQ）
-    void setNES(NES* n) { nes = n; }
     
-    // SRAM 访问 (用于电池备份存档)
+    void setNES(NES* n) { nes = n; }
+
+    
+    bool consumePpuRenderingDirty()
+    {
+        bool dirty = ppuRenderingDirty;
+        ppuRenderingDirty = false;
+        return dirty;
+    }
+    
+    
     uint8_t* getSRAM() { return sram; }
     
-    // Save state 接口
+    
     void saveState(uint8_t* buf, size_t& offset) const;
     void loadState(const uint8_t* buf, size_t& offset);
     size_t getStateSize() const;
 
 private:
-    // iNES 头信息
-    uint8_t prgBanks = 0;      // PRG ROM 数量 (16KB 单位)
-    uint8_t chrBanks = 0;      // CHR ROM 数量 (8KB 单位)
-    uint8_t mapper = 0;        // Mapper 编号
-    bool mirrorVertical = false;  // true=垂直镜像, false=水平镜像
-    bool hasBattery = false;   // 是否有电池备份
     
-    // ROM 数据 - 使用动态分配 (PSRAM)
-    uint8_t* prg = nullptr;    // PRG ROM (动态分配)
-    uint8_t* chr = nullptr;    // CHR ROM (动态分配, 最多 256KB)
-    uint8_t* vram = nullptr;   // VRAM 指针 (来自 NES，用于 NameTable 镜像)
-    uint8_t chrRam[0x2000];    // 8KB CHR RAM (当无 CHR ROM 时使用)
-    uint8_t* chrWindow = nullptr; // 当前 CHR 窗口指针 (用于快速访问)
+    uint8_t prgBanks = 0;      
+    uint8_t chrBanks = 0;      
+    uint8_t mapper = 0;        
+    uint8_t submapper = 0;
+    bool mirrorVertical = false;  
+    bool hasBattery = false;   
+    bool oneScreenMirror = false; 
+    bool oneScreenUpper = false;  
+    
+    
+    uint8_t* prg = nullptr;    
+    uint8_t* chr = nullptr;    
+    uint8_t* vram = nullptr;   
+    uint8_t chrRam[0x2000];    
+    uint8_t* chrWindow = nullptr; 
     uint32_t prgSize = 0;
     uint32_t chrSize = 0;
     
-    // SRAM (用于电池备份)
-    uint8_t sram[0x2000];      // 8KB SRAM ($6000-$7FFF)
     
-    // ========== PRG Bank Cache ==========
-    uint8_t prgBankSelect = 0;  // Mapper 2: 选择的 PRG bank
-    uint32_t prgBank0Offset = 0; // $8000 (16KB) 或 $8000-$9FFF (MMC3 8KB)
-    uint32_t prgBank1Offset = 0; // $C000 (16KB) 或 $A000-$BFFF (MMC3 8KB)
-    uint32_t prgBank2Offset = 0; // $C000-$DFFF (MMC3 8KB)
-    uint32_t prgBank3Offset = 0; // $E000-$FFFF (MMC3 8KB)
+    uint8_t sram[0x2000];      
     
-    // ========== CHR Bank Pointer Cache ==========
+    
+    uint8_t prgBankSelect = 0;  
+    uint32_t prgBank0Offset = 0; 
+    uint32_t prgBank1Offset = 0; 
+    uint32_t prgBank2Offset = 0; 
+    uint32_t prgBank3Offset = 0; 
+    
+    
 public:
-    uint8_t* chrBankPtrs[8] = {nullptr}; // 8 x 1KB CHR 指针缓存，消除运行时 bank 计算
+    uint8_t* chrBankPtrs[8] = {nullptr}; 
     
-    // ========== Nametable Pointer Cache ==========
-    uint8_t* ntPtrs[4] = {nullptr};  // 4 x 1KB nametable 指针，消除镜像分支
-    void updateNtPtrs();  // 在镜像模式变更时调用
+    
+    uint8_t* ntPtrs[4] = {nullptr};  
+    void updateNtPtrs();  
 private:
 
-    // ========== Mapper 1 (MMC1) ==========
-    uint8_t mmc1ShiftReg = 0x10;   // 移位寄存器 (bit 4 = 重置标志)
-    uint8_t mmc1WriteCount = 0;    // 写入计数 (0-4)
-    uint8_t mmc1Control = 0x0C;    // 控制寄存器 ($8000-$9FFF)
-    uint8_t mmc1ChrBank0 = 0;      // CHR bank 0 ($A000-$BFFF)
-    uint8_t mmc1ChrBank1 = 0;      // CHR bank 1 ($C000-$DFFF)
-    uint8_t mmc1PrgBank = 0;       // PRG bank ($E000-$FFFF)
     
-    // ========== Mapper 3 (CNROM) ==========
-    uint8_t cnromChrBank = 0;      // CHR bank 选择
+    uint8_t mmc1ShiftReg = 0x10;   
+    uint8_t mmc1WriteCount = 0;    
+    uint8_t mmc1Control = 0x0C;    
+    uint8_t mmc1ChrBank0 = 0;      
+    uint8_t mmc1ChrBank1 = 0;      
+    uint8_t mmc1PrgBank = 0;       
     
-    // ========== Mapper 4 (MMC3) ==========
-    uint8_t mmc3BankSelect = 0;    // Bank 选择寄存器
-    uint8_t mmc3Banks[8] = {0};    // 8 个 bank 寄存器
-    bool mmc3PrgMode = false;      // PRG bank 模式
-    bool mmc3ChrMode = false;      // CHR bank 模式
-    uint8_t mmc3IrqLatch = 0;      // IRQ 计数器锁存值
-    uint8_t mmc3IrqCounter = 0;    // IRQ 计数器
-    bool mmc3IrqEnabled = false;   // IRQ 使能
-    bool mmc3IrqReload = false;    // IRQ 重载标志
-    bool mmc3IrqPending = false;   // IRQ 待处理
-    bool mmc3PrevA12 = false;      // 上一次 A12 的电平（用于上升沿检测）
-    uint32_t mmc3A12LowStart = 0;   // A12 进入低电平时的绝对 PPU cycle（用于抖动抑制）
+    
+    uint8_t cnromChrBank = 0;      
+    uint8_t mapper34ChrBank0 = 0;
+    uint8_t mapper34ChrBank1 = 1;
+    bool mapper34NinaMode = false;
+    uint8_t colorDreamsPrgBank = 0;
+    uint8_t colorDreamsChrBank = 0;
+    uint8_t gxromPrgBank = 0;
+    uint8_t gxromChrBank = 0;
+    uint8_t mmc2PrgBank = 0;
+    uint8_t mmc2ChrFd0 = 0;
+    uint8_t mmc2ChrFe0 = 0;
+    uint8_t mmc2ChrFd1 = 0;
+    uint8_t mmc2ChrFe1 = 0;
+    bool mmc2Latch0FE = false;
+    bool mmc2Latch1FE = false;
 
-    // 指向主机 NES 的指针（用于触发 IRQ）
+    uint8_t fme7Command = 0;
+    uint8_t fme7ChrBanks[8] = {0};
+    uint8_t fme7PrgBanks[4] = {0};
+    bool fme7RamEnable = false;
+    bool fme7RamSelect = false;
+    bool fme7RamWriteEnable = false;
+    bool fme7IrqEnable = false;
+    bool fme7IrqCounterEnable = false;
+    uint16_t fme7IrqCounter = 0;
+    uint32_t prgBank6000Offset = 0;
+    uint8_t vrcChrBanks[8] = {0};
+    uint8_t vrcChrHighBits[8] = {0};
+    uint8_t vrc6Prg16Bank = 0;
+    uint8_t vrcPrgBank8000 = 0;
+    uint8_t vrcPrgBankA000 = 0;
+    uint8_t vrcPrgBankC000 = 0;
+    uint8_t vrc6PpuCtrl = 0x20;
+    uint8_t vrcIrqLatch = 0;
+    uint8_t vrcIrqCounter = 0;
+    bool vrcIrqEnable = false;
+    bool vrcIrqEnableAfterAck = false;
+    bool vrcIrqModeCycle = false;
+    int16_t vrcIrqPrescaler = 341;
+    uint8_t vrcRegCmd = 0;
+    uint8_t vrcReg1Mask = 0;
+    uint8_t vrcReg2Mask = 0;
+    uint8_t vrc2Latch = 0;
+    uint8_t mapper18PrgRegs[3] = {0, 1, 0};
+    uint8_t mapper18ChrRegs[8] = {0};
+    uint16_t mapper18IrqCounter = 0;
+    uint16_t mapper18IrqLatch = 0;
+    bool mapper18IrqEnable = false;
+    uint16_t mapper18IrqSizeMask = 0xFFFF;
+    bool mapper18RamEnable = true;
+    bool mapper18RamWriteEnable = true;
+    uint8_t mapper19PrgRegs[3] = {0, 1, 2};
+    uint8_t mapper19ChrRegs[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    uint8_t mapper19NtRegs[4] = {0xE0, 0xE1, 0xE0, 0xE1};
+    uint8_t mapper19InternalRam[128] = {0};
+    uint8_t mapper19AddrPort = 0;
+    uint8_t mapper19ChrRamCtl = 0x03;
+    uint8_t mapper19WramProtect = 0x4F;
+    uint8_t mapper19RegF000 = 0;
+    uint16_t mapper19IrqCounter = 0;
+    bool mapper19IrqEnable = false;
+    uint8_t m163Reg5000 = 0;
+    uint8_t m163Reg5200 = 0;
+    uint8_t m163Mode5300 = 0;
+    uint8_t m163FeedbackBit = 0;
+    bool m163FeedbackSetMode = false;
+    bool m163PrevA13 = false;
+    uint8_t m163LatchedA9 = 0;
+    uint8_t mmc5PrgMode = 3;
+    uint8_t mmc5ChrMode = 3;
+    uint8_t mmc5ExRamMode = 0;
+    uint8_t mmc5NtMap = 0;
+    uint8_t mmc5FillTile = 0;
+    uint8_t mmc5FillAttr = 0;
+    uint8_t mmc5UpperChrBits = 0;
+    uint8_t mmc5PrgRegs[5] = {0x00, 0x80, 0x81, 0x82, 0xFF}; // $5113-$5117
+    uint8_t mmc5ChrRegsA[8] = {0};
+    uint8_t mmc5ChrRegsB[4] = {0};
+    uint8_t mmc5ExRam[0x400] = {0};
+    uint8_t* mmc5BgChrPtrs[8] = {nullptr};
+    uint8_t* mmc5SpChrPtrs[8] = {nullptr};
+    bool mmc5LastChrWriteSetB = false;
+    bool mmc5IrqEnable = false;
+    uint8_t mmc5IrqTargetScanline = 0;
+    uint8_t mmc5ScanlineCounter = 0;
+    bool mmc5InFrame = false;
+
+    uint8_t mapper32Prg0 = 0;
+    uint8_t mapper32Prg1 = 1;
+    uint8_t mapper32Ctrl = 0;
+    uint8_t mapper32ChrBanks[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+
+    uint8_t mapper33Regs[8] = {0, 1, 0, 1, 0, 0, 0, 0};
+    uint8_t mapper33Mirror = 0;
+    bool mapper48IrqEnable = false;
+    uint8_t mapper48IrqCounter = 0;
+    uint8_t mapper48IrqLatch = 0;
+
+    uint8_t mapper64BankSelect = 0;
+    uint8_t mapper64Regs[16] = {0};
+    bool mapper64PrgMode = false;
+    bool mapper64ChrMode = false;
+    bool mapper64Chr1kMode = false;
+    bool mapper64IrqEnable = false;
+    bool mapper64IrqReload = false;
+    bool mapper64IrqCycleMode = false;
+    uint8_t mapper64IrqCounter = 0;
+    uint8_t mapper64IrqLatch = 0;
+    uint8_t mapper64IrqPrescaler = 0;
+    bool mapper64PrevA12 = false;
+    uint8_t mapper64A12LowCycles = 0;
+
+    uint8_t mapper70Reg = 0;
+    uint8_t mapper79Reg = 0;
+    uint8_t mapper87Reg = 0;
+    uint8_t mapper148Reg = 0;
+    
+    
+    uint8_t mmc3BankSelect = 0;    
+    uint8_t mmc3Banks[8] = {0};    
+    bool mmc3PrgMode = false;      
+    bool mmc3ChrMode = false;      
+    uint8_t mmc3IrqLatch = 0;      
+    uint8_t mmc3IrqCounter = 0;    
+    bool mmc3IrqEnabled = false;   
+    bool mmc3IrqReload = false;    
+    bool mmc3IrqPending = false;   
+    bool mmc3PrevA12 = false;      
+    uint8_t mmc3A12LowCycles = 0;   // In PPU-cycle-like units; 9 ~= 3 CPU cycles.
+    uint64_t mmc3LastObserveCpuCycle = 0;
+    bool mmc3LastObserveCpuCycleValid = false;
+    bool mmc3ClockedThisScanline = false;
+    bool ppuRenderingDirty = true;
+    uint8_t mapper7BusConflictMode = 1; // 1: no conflicts, 2: AND conflicts
+    bool mapper71MirroringMode = false;
+
+    
     NES* nes = nullptr;
     
-    // Mapper 特定函数
+    
     void updateBankCache();
     void updateMmc1Banks();
     void updateMmc3Banks();
+    void updateNamco108Banks();
+    void updateMapper32Banks();
+    void updateMapper33Banks();
+    void updateMapper64Banks();
+    void updateMapper18Banks();
+    void updateMapper19PrgBanks();
     void updateChrBankCache();
+    void updateMapper118Nametables();
+    void updateMapper95Nametables();
     
-    // Mapper 读写函数 (IRAM_ATTR 确保热路径在 SRAM 执行)
+    
     uint8_t IRAM_ATTR cpuReadMapper0(uint16_t addr);
     uint8_t IRAM_ATTR cpuReadMapper1(uint16_t addr);
     uint8_t IRAM_ATTR cpuReadMapper2(uint16_t addr);
     uint8_t IRAM_ATTR cpuReadMapper3(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper34(uint16_t addr);
     uint8_t IRAM_ATTR cpuReadMapper4(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper7(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper11(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper66(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper9(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper10(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper18(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper19(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper23(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper25(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper32(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper33(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper64(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper70(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper79(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper87(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper148(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper69(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper118(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper119(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper206(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper24(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper26(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper71(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper85(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper94(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper163(uint16_t addr);
+    uint8_t IRAM_ATTR cpuReadMapper5(uint16_t addr);
     
     void cpuWriteMapper1(uint16_t addr, uint8_t val);
     void cpuWriteMapper2(uint16_t addr, uint8_t val);
     void cpuWriteMapper3(uint16_t addr, uint8_t val);
+    void cpuWriteMapper34(uint16_t addr, uint8_t val);
     void cpuWriteMapper4(uint16_t addr, uint8_t val);
+    void cpuWriteMapper7(uint16_t addr, uint8_t val);
+    void cpuWriteMapper11(uint16_t addr, uint8_t val);
+    void cpuWriteMapper66(uint16_t addr, uint8_t val);
+    void cpuWriteMapper9(uint16_t addr, uint8_t val);
+    void cpuWriteMapper10(uint16_t addr, uint8_t val);
+    void cpuWriteMapper18(uint16_t addr, uint8_t val);
+    void cpuWriteMapper19(uint16_t addr, uint8_t val);
+    void cpuWriteMapper23(uint16_t addr, uint8_t val);
+    void cpuWriteMapper25(uint16_t addr, uint8_t val);
+    void cpuWriteMapper32(uint16_t addr, uint8_t val);
+    void cpuWriteMapper33(uint16_t addr, uint8_t val);
+    void cpuWriteMapper48(uint16_t addr, uint8_t val);
+    void cpuWriteMapper64(uint16_t addr, uint8_t val);
+    void cpuWriteMapper70(uint16_t addr, uint8_t val);
+    void cpuWriteMapper79(uint16_t addr, uint8_t val);
+    void cpuWriteMapper87(uint16_t addr, uint8_t val);
+    void cpuWriteMapper148(uint16_t addr, uint8_t val);
+    void cpuWriteMapper69(uint16_t addr, uint8_t val);
+    void cpuWriteMapper118(uint16_t addr, uint8_t val);
+    void cpuWriteMapper119(uint16_t addr, uint8_t val);
+    void cpuWriteMapper206(uint16_t addr, uint8_t val);
+    void cpuWriteMapper24(uint16_t addr, uint8_t val);
+    void cpuWriteMapper26(uint16_t addr, uint8_t val);
+    void cpuWriteMapper71(uint16_t addr, uint8_t val);
+    void cpuWriteMapper85(uint16_t addr, uint8_t val);
+    void cpuWriteMapper94(uint16_t addr, uint8_t val);
+    void cpuWriteMapper163(uint16_t addr, uint8_t val);
+    void cpuWriteMapper5(uint16_t addr, uint8_t val);
+    void clockVrcIrq(uint32_t cpuCycles);
+    void updateMapper163Prg();
+    void updateMmc5PrgBanks();
+    void updateMmc5ChrBanks();
+    uint8_t IRAM_ATTR readMmc5NameTable(uint16_t addr);
+    void writeMmc5NameTable(uint16_t addr, uint8_t val);
+    uint8_t IRAM_ATTR readMapper19NameTable(uint16_t addr);
+    void writeMapper19NameTable(uint16_t addr, uint8_t val);
+    uint8_t IRAM_ATTR readMmc5Chr(uint16_t addr, bool spriteFetch) const;
+    void configureVrcMapping();
+    bool isVrc2Mode() const;
+    bool isVrc4Mode() const;
+    bool shouldEnforceVrc4WramControl() const;
+public:
+    bool isMapper5ExtAttrMode() const { return mapper == 5 && mmc5ExRamMode == 1; }
+    uint8_t mmc5ExtAttrByte(uint16_t tileOffset) const { return mmc5ExRam[tileOffset & 0x03FF]; }
+    uint8_t IRAM_ATTR readMmc5BgPatternByte(uint16_t addr) const { return readMmc5Chr(addr, false); }
+    uint8_t IRAM_ATTR readMmc5SpPatternByte(uint16_t addr) const { return readMmc5Chr(addr, true); }
+    void notifyScanlineStart(int scanline, bool renderingEnabled);
     
     uint8_t IRAM_ATTR ppuReadMapper1(uint16_t addr);
     uint8_t IRAM_ATTR ppuReadMapper3(uint16_t addr);
@@ -141,4 +367,5 @@ private:
     
     void ppuWriteMapper1(uint16_t addr, uint8_t val);
     void ppuWriteMapper4(uint16_t addr, uint8_t val);
+    void ppuWriteMapper119(uint16_t addr, uint8_t val);
 };

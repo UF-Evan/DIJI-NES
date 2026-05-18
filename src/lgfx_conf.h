@@ -38,8 +38,8 @@ class LGFX : public lgfx::LGFX_Device
 //lgfx::Panel_SSD1963     _panel_instance;
 //lgfx::Panel_ST7735      _panel_instance;
 //lgfx::Panel_ST7735S     _panel_instance;
-lgfx::Panel_ST7789      _panel_instance;
-//lgfx::Panel_ST7796      _panel_instance;
+// lgfx::Panel_ST7789      _panel_instance;
+lgfx::Panel_ST7796      _panel_instance;
 
 // 为屏幕所连接的总线类型准备一个实例。
   lgfx::Bus_SPI        _bus_instance;   // SPI
@@ -98,16 +98,16 @@ public:
 
         // * 下面的设置对每个面板都有一般的默认值，如果你对某个项目不确定，可以把它注释出来并试一试。
 
-      cfg.panel_width      =   240;  // 实际可显示的宽度
-      cfg.panel_height     =   320;  // 实际可显示的高度
+      cfg.panel_width      =   320;  // 实际可显示的宽度
+      cfg.panel_height     =   480;  // 实际可显示的高度
       cfg.offset_x         =     0;  // 在屏幕的X方向上的偏移量
       cfg.offset_y         =     0;  // 在屏幕的Y方向上的偏移量
       cfg.offset_rotation  =     0;  // 旋转方向的偏移量为0~7（4~7为倒置）。
       cfg.dummy_read_pixel =     8;  // 读取像素前的假读位数量
       cfg.dummy_read_bits  =     1;  // 读取非像素数据前的虚拟读取位数
-      cfg.readable         =  true;  // 如果可以读取数据，则设置为true。
-      cfg.invert           = true;   // 设定 是否反色，有些屏幕需要设置这个值才能获取正确的颜色
-      cfg.rgb_order        = false;  // true 为 RGB false 为 BGR
+      cfg.readable         =  false;  // 如果可以读取数据，则设置为true。
+      cfg.invert           = false;   // 设定 是否反色，有些屏幕需要设置这个值才能获取正确的颜色
+      cfg.rgb_order        = false;   // true 为 RGB false 为 BGR
       cfg.dlen_16bit       = false;  // 如果面板在16位并行或SPI中以16位单位传输数据长度，则设置为true。
       cfg.bus_shared       = false;  // SDカー如果与SD卡共享总线，则设置为true（总线控制由drawJpgFile等执行）。
 

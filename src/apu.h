@@ -24,6 +24,7 @@
 
 class APU {
 public:
+    using DmcReadCallback = uint8_t(*)(void*, uint16_t);
     APU();
     ~APU();
     
@@ -99,6 +100,10 @@ public:
      * @return      实际读取的样本数
      */
     int readSamples(int16_t* buf, int count);
+    
+    // Compatibility hooks used by newer NES core integration.
+    void setDmcMemoryReadCallback(DmcReadCallback cb, void* ctx) { (void)cb; (void)ctx; }
+    bool irqPending() const { return false; }
     
     /**
      * Save State 接口

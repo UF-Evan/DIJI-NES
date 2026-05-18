@@ -118,7 +118,7 @@ A small number of games with non-standard timing, special mappers, or bootleg ma
 | 组件       | 规格                                              |
 |------------|---------------------------------------------------|
 | **MCU**    | ESP32-S3-N16R8 (双核 240MHz, 16MB Flash, 8MB PSRAM) |
-| **显示屏** | ST7789 TFT LCD 320×240 (SPI)                       |
+| **显示屏** | ST7796 TFT LCD 480×320 (SPI)                       |
 | **音频 DAC** | MAX98357A I2S DAC                                 |
 | **存储**   | SD 卡 (FAT32, 存放 ROM 文件)                       |
 | **输入**   | 8 个按键 (直连 GPIO)                              |
@@ -128,7 +128,7 @@ A small number of games with non-standard timing, special mappers, or bootleg ma
 | Component | Specification |
 |-----------|---------------|
 | **MCU** | ESP32-S3-N16R8 (dual-core 240MHz, 16MB Flash, 8MB PSRAM) |
-| **Display** | ST7789 TFT LCD 320x240 (SPI) |
+| **Display** | ST7796 TFT LCD 480×320 (SPI)|
 | **Audio DAC** | MAX98357A I2S DAC |
 | **Storage** | SD card (FAT32, stores ROM files) |
 | **Input** | 8 buttons (direct GPIO wiring) |
@@ -152,7 +152,7 @@ A small number of games with non-standard timing, special mappers, or bootleg ma
 ### 控制器按键
 | 按键   | GPIO |
 |--------|------|
-| A      | 48   |
+| A      | 45   |
 | B      | 47   |
 | SELECT | 16   |
 | START  | 15   |
@@ -196,7 +196,7 @@ A small number of games with non-standard timing, special mappers, or bootleg ma
 ### Controller Buttons
 | Button | GPIO |
 |--------|------|
-| A      | 48   |
+| A      | 45   |
 | B      | 47   |
 | SELECT | 16   |
 | START  | 15   |
