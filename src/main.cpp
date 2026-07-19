@@ -15,6 +15,10 @@
 #include "esp_err.h"
 #include "esp_timer.h"
 
+// ================ 连发设置 ================
+#define TURBO_INTERVAL_MS 60  // 连发间隔（毫秒），60ms ≈ 16次/秒
+                               // 可调整为 40（更快，25次/秒）或 80（更慢，12次/秒）
+
 // 串口调试开关
 #ifndef ENABLE_DEBUG_SERIAL
 #define ENABLE_DEBUG_SERIAL false
@@ -416,10 +420,51 @@ void initializeButtons() {
     pinMode(SELECT_BUTTON, INPUT_PULLUP);
 }
 
+// 简化的连发变量
+struct TurboState {
+    bool aLastState = false;
+    bool bLastState = false;
+    unsigned long aLastToggle = 0;
+    unsigned long bLastToggle = 0;
+};
+
+static TurboState turbo;
+
 void updateButtons() {
     // 直接读取按键状态 (INPUT_PULLUP: 按下=0, 松开=1)
-    buttons.A      = !digitalRead(A_BUTTON);
-    buttons.B      = !digitalRead(B_BUTTON);
+    bool aRaw = !digitalRead(A_BUTTON);
+    bool bRaw = !digitalRead(B_BUTTON);
+    unsigned long now = millis();
+    
+    // ===== A键连发 =====
+    if (aRaw) {
+        // 按键按住：定时切换状态，实现连发
+        if (now - turbo.aLastToggle >= TURBO_INTERVAL_MS) {
+            turbo.aLastState = !turbo.aLastState;
+            turbo.aLastToggle = now;
+        }
+        buttons.A = turbo.aLastState;
+    } else {
+        // 按键释放：重置状态
+        buttons.A = 0;
+        turbo.aLastState = false;
+        turbo.aLastToggle = now;
+    }
+    
+    // ===== B键连发 =====
+    if (bRaw) {
+        if (now - turbo.bLastToggle >= TURBO_INTERVAL_MS) {
+            turbo.bLastState = !turbo.bLastState;
+            turbo.bLastToggle = now;
+        }
+        buttons.B = turbo.bLastState;
+    } else {
+        buttons.B = 0;
+        turbo.bLastState = false;
+        turbo.bLastToggle = now;
+    }
+    
+    // ===== 其他按键直通（无连发） =====
     buttons.LEFT   = !digitalRead(LEFT_BUTTON);
     buttons.RIGHT  = !digitalRead(RIGHT_BUTTON);
     buttons.UP     = !digitalRead(UP_BUTTON);
@@ -1119,7 +1164,7 @@ static void initializeAudio() {
         .sample_rate = AUDIO_SAMPLE_RATE,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
         .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-        .communication_format = (i2s_comm_format_t)I2S_COMM_FORMAT_I2S_MSB,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = 0,
         .dma_buf_count = 4,
         .dma_buf_len = 256,
@@ -1186,6 +1231,9 @@ void setup() {
     // 初始化音频 (I2S) 并在另一个 CPU core 上运行音频任务
     initializeAudio();
     
+    //修改初始化音量1
+    nes.apu.setVolumeLevel(1);
+
     // 创建显示任务在 Core 0
     frame_queue = xQueueCreate(1, sizeof(uint8_t));
     if (frame_queue) {
