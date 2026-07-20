@@ -19,6 +19,9 @@
 #define TURBO_INTERVAL_MS 50  // 连发间隔（毫秒），60ms ≈ 16次/秒
                                // 可调整为 40（更快，25次/秒）或 80（更慢，12次/秒）
 
+bool turboAEnabled = false;
+bool turboBEnabled = false;
+
 // 串口调试开关
 #ifndef ENABLE_DEBUG_SERIAL
 #define ENABLE_DEBUG_SERIAL false
@@ -48,7 +51,7 @@ static int selectedIndex = 0;             // 当前选中的游戏索引
 static int scrollOffset = 0;              // 滚动偏移
 static const int ITEMS_PER_PAGE = 8;      // 每页显示的游戏数量
 static int pauseMenuIndex = 0;            // 暂停菜单选项索引
-static constexpr int PAUSE_OPTION_COUNT = 5;
+static constexpr int PAUSE_OPTION_COUNT = 7;
 static constexpr int PAUSE_VOLUME_INDEX = 1;
 
 // ROM 文件名可能包含 UTF-8 中文；默认 Font0 不含中文字形。
@@ -435,36 +438,52 @@ void updateButtons() {
     bool aRaw = !digitalRead(A_BUTTON);
     bool bRaw = !digitalRead(B_BUTTON);
     unsigned long now = millis();
-    
-    // ===== A键连发 =====
-    if (aRaw) {
-        // 按键按住：定时切换状态，实现连发
-        if (now - turbo.aLastToggle >= TURBO_INTERVAL_MS) {
-            turbo.aLastState = !turbo.aLastState;
+
+    // ===== A键连发（带开关控制）=====
+    if (turboAEnabled) {
+        // 连发模式
+        if (aRaw) {
+            if (now - turbo.aLastToggle >= TURBO_INTERVAL_MS) {
+                turbo.aLastState = !turbo.aLastState;
+                turbo.aLastToggle = now;
+            }
+            buttons.A = turbo.aLastState;
+        } else {
+            buttons.A = 0;
+            turbo.aLastState = false;
             turbo.aLastToggle = now;
         }
-        buttons.A = turbo.aLastState;
     } else {
-        // 按键释放：重置状态
-        buttons.A = 0;
+        // 单发模式：直接映射按键状态
+        buttons.A = aRaw;
+        // 重置连发状态
         turbo.aLastState = false;
         turbo.aLastToggle = now;
     }
     
-    // ===== B键连发 =====
-    if (bRaw) {
-        if (now - turbo.bLastToggle >= TURBO_INTERVAL_MS) {
-            turbo.bLastState = !turbo.bLastState;
+    // ===== B键连发（带开关控制）=====
+    if (turboBEnabled) {
+        // 连发模式
+        if (bRaw) {
+            if (now - turbo.bLastToggle >= TURBO_INTERVAL_MS) {
+                turbo.bLastState = !turbo.bLastState;
+                turbo.bLastToggle = now;
+            }
+            buttons.B = turbo.bLastState;
+        } else {
+            buttons.B = 0;
+            turbo.bLastState = false;
             turbo.bLastToggle = now;
         }
-        buttons.B = turbo.bLastState;
     } else {
-        buttons.B = 0;
+        // 单发模式：直接映射按键状态
+        buttons.B = bRaw;
+        // 重置连发状态
         turbo.bLastState = false;
         turbo.bLastToggle = now;
     }
-    
     // ===== 其他按键直通（无连发） =====
+    
     buttons.LEFT   = !digitalRead(LEFT_BUTTON);
     buttons.RIGHT  = !digitalRead(RIGHT_BUTTON);
     buttons.UP     = !digitalRead(UP_BUTTON);
@@ -744,7 +763,7 @@ void drawPauseMenu() {
     
     // 暂停菜单框
     int menuWidth = 160;
-    int menuHeight = 154;  // 增加高度以容纳更多选项
+    int menuHeight = 195;  // 增加高度以容纳更多选项
     int menuX = (320 - menuWidth) / 2;
     int menuY = (240 - menuHeight) / 2;
     
@@ -752,6 +771,10 @@ void drawPauseMenu() {
     tft.fillRect(menuX, menuY, menuWidth, menuHeight, MENU_BG_COLOR);
     tft.drawRect(menuX, menuY, menuWidth, menuHeight, MENU_BORDER_COLOR);
     tft.drawRect(menuX + 1, menuY + 1, menuWidth - 2, menuHeight - 2, MENU_BORDER_COLOR);
+
+    // ===== 设置中文字体 =====
+    //tft.setFont(MENU_ROM_FONT);  // ← 关键：使用中文字体
+    //tft.setTextSize(1);
     
     // 标题
     tft.setTextColor(MENU_TITLE_COLOR);
@@ -762,8 +785,13 @@ void drawPauseMenu() {
     // 分隔线
     tft.drawFastHLine(menuX + 10, menuY + 32, menuWidth - 20, MENU_BORDER_COLOR);
     
-    // 菜单选项 - 添加 Volume 和 Save/Load State
-    const char* options[] = {"Continue", "Volume", "Save State", "Load State", "Exit to Menu"};
+    // 菜单选项
+    // 动态构建选项文本
+    char turboAText[20], turboBText[20];
+    snprintf(turboAText, sizeof(turboAText), "A Turbo: %s", turboAEnabled ? "ON " : "OFF");
+    snprintf(turboBText, sizeof(turboBText), "B Turbo: %s", turboBEnabled ? "ON " : "OFF");
+ 
+    const char* options[] = {"Continue", "Volume", turboAText, turboBText,"Save State", "Load State", "Exit to Menu"};
     tft.setTextSize(1);
     
     for (int i = 0; i < PAUSE_OPTION_COUNT; i++) {
@@ -979,7 +1007,15 @@ void handlePauseInput() {
             uint8_t level = nes.apu.getVolumeLevel();
             nes.apu.setVolumeLevel(level < 5 ? level + 1 : 0);
             drawPauseMenu();
-        } else if (pauseMenuIndex == 2) {
+        } else if (pauseMenuIndex == 2){
+            // 切换A连发
+            turboAEnabled = !turboAEnabled;
+            drawPauseMenu();  // 立即刷新显示
+        } else if (pauseMenuIndex == 3){
+            // 切换B连发
+            turboBEnabled = !turboBEnabled;
+            drawPauseMenu();  // 立即刷新显示
+        } else if (pauseMenuIndex == 4) {
             // Save State
             tft.fillScreen(TFT_BLACK);
             tft.setTextColor(MENU_TITLE_COLOR);
@@ -1010,7 +1046,7 @@ void handlePauseInput() {
             resetFrameScheduler(3);
             gameRunning = true;
             currentState = STATE_PLAYING;
-        } else if (pauseMenuIndex == 3) {
+        } else if (pauseMenuIndex == 5) {
             // Load State
             tft.fillScreen(TFT_BLACK);
             tft.setTextColor(MENU_TITLE_COLOR);
