@@ -482,7 +482,17 @@ void APU::clock() {
         static int32_t filteredSample = 0;
         filteredSample += (sample - filteredSample) >> 1;
         sample = filteredSample;
-        sample = (sample * volumeLevel) / 5;
+        //sample = (sample * volumeLevel) / 5;
+        // 使用音量映射表，每一级更精细控制
+        static const float VOLUME_MAP[6] = {
+            0.0f,   // 0: 静音
+            0.05f,  // 1: 5%
+            0.10f,  // 2: 10%
+            0.30f,  // 3: 30%
+            0.50f,  // 4: 50%
+            1.00f   // 5: 100%
+		};
+		sample = (int32_t)(sample * VOLUME_MAP[volumeLevel]);
         
         // 写入立体声缓冲区 (左右声道相同)
         uint16_t index = apu_buffer_index << 1;
